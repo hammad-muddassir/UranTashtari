@@ -1,5 +1,6 @@
 package com.uran.tashtari.ui
 
+import com.uran.tashtari.camera.CameraPreview
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -91,7 +92,7 @@ fun ControlScreen(modifier: Modifier = Modifier) {
         ) {
             // When Stage 2 is done, replace this Text with:
             // CameraPreview(url = "http://192.168.4.1/stream", modifier = Modifier.fillMaxSize())
-            Text("NO VIDEO SIGNAL", color = Color(0xFF64748B), letterSpacing = 2.sp)
+            CameraPreview(url = "http://192.168.4.1/stream", modifier = Modifier.fillMaxSize())
             Box(Modifier.align(Alignment.TopStart).padding(12.dp)) {
                 StatusPill("CAMERA OFFLINE", Muted)
             }
