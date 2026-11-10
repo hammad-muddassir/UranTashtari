@@ -1,6 +1,11 @@
 package com.uran.tashtari.ui
 
-import com.uran.tashtari.camera.CameraPreview
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,12 +21,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.uran.tashtari.camera.CameraPreview
 import com.uran.tashtari.model.DroneCommand
-import com.uran.tashtari.network.FakeCommandSender
+import com.uran.tashtari.network.*
+import kotlinx.coroutines.delay
 
 private val PanelColor = Color(0xFF131C2E)
 private val LineColor = Color(0xFF22304A)
@@ -30,13 +41,21 @@ private val Danger = Color(0xFFEF4444)
 private val Ok = Color(0xFF22C55E)
 private val Warn = Color(0xFFF59E0B)
 
+private const val STEP = 20   // v0.1 limit is -20..+20
+
 @Composable
 fun ControlScreen(modifier: Modifier = Modifier) {
-    val sender = remember { FakeCommandSender() }
-    var seq by remember { mutableIntStateOf(0) }
-    var mode by remember { mutableStateOf("MANUAL") }
-    var throttle by remember { mutableFloatStateOf(0f) }
+    val context = LocalContext.current
+    val sender: CommandSender = remember { BleCommandSender(context.applicationContext) }
+    // For UI work without hardware, use this line instead:
+    // val sender: CommandSender = remember { FakeCommandSender() }
+
+    val link by sender.state.collectAsState()
+    var roll by remember { mutableIntStateOf(0) }
+    var pitch by remember { mutableIntStateOf(0) }
+    var yaw by remember { mutableIntStateOf(0) }
     var stopped by remember { mutableStateOf(false) }
+    var lastReply by remember { mutableStateOf("-") }
     val log = remember { mutableStateListOf<String>() }
 
     fun addLog(line: String) {
@@ -44,13 +63,72 @@ fun ControlScreen(modifier: Modifier = Modifier) {
         if (log.size > 50) log.removeAt(log.lastIndex)
     }
 
-    fun send(roll: Int = 0, pitch: Int = 0, yaw: Int = 0) {
-        seq++
-        val cmd = DroneCommand(seq, mode, roll, pitch, yaw, throttle.toInt())
-        addLog(sender.send(cmd))
+    // ---------- permissions ----------
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        if (result.values.all { it }) sender.connect() else addLog("Bluetooth permission denied")
     }
 
-    val manualEnabled = !stopped && mode == "MANUAL"
+    fun connectWithPermission() {
+        val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        else arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
+        val missing = needed.filter {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (missing.isEmpty()) sender.connect() else permissionLauncher.launch(missing.toTypedArray())
+    }
+
+    // ---------- replies and link changes ----------
+    LaunchedEffect(sender) {
+        sender.replies.collect {
+            lastReply = it
+            addLog("COMM: $it")
+        }
+    }
+    LaunchedEffect(link) { addLog("LINK: ${link.message}") }
+
+    // ---------- 100 ms control stream (only while connected and not e-stopped) ----------
+    val manualEnabled = link.status == LinkStatus.READY && !stopped
+
+    LaunchedEffect(manualEnabled) {
+        if (!manualEnabled) return@LaunchedEffect
+        var seq = 0
+        var lastLogged = Triple(Int.MIN_VALUE, 0, 0)
+        while (true) {
+            seq = (seq + 1) and 0xFF
+            val cmd = DroneCommand(seq, roll, pitch, yaw)
+            sender.sendControl(cmd)
+            val axes = Triple(roll, pitch, yaw)
+            if (axes != lastLogged) {            // log changes only, not all 10 packets per second
+                addLog("TX ${UranProtocol.control(cmd).trim()}")
+                lastLogged = axes
+            }
+            delay(100)
+        }
+    }
+
+    // ---------- safety when the app leaves the foreground ----------
+    DisposableEffect(context) {
+        val activity = context as ComponentActivity
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_PAUSE) { roll = 0; pitch = 0; yaw = 0 }
+            if (event == Lifecycle.Event.ON_STOP) sender.disconnect()
+        }
+        activity.lifecycle.addObserver(observer)
+        onDispose {
+            activity.lifecycle.removeObserver(observer)
+            sender.disconnect()
+        }
+    }
+
+    val (pillText, pillColor) = when {
+        stopped -> "E-STOP" to Danger
+        link.status == LinkStatus.READY -> "BLE READY" to Ok
+        link.status == LinkStatus.IDLE -> "BLE OFF" to Muted
+        else -> "BLE ${link.status.name}" to Warn
+    }
 
     Column(
         modifier = modifier
@@ -72,12 +150,9 @@ fun ControlScreen(modifier: Modifier = Modifier) {
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary
                 )
-                Text("Flight control (simulation)", fontSize = 12.sp, color = Muted)
+                Text("BLE Simulation v0.1 - no motors", fontSize = 12.sp, color = Muted)
             }
-            StatusPill(
-                text = if (stopped) "E-STOP" else "LINK: MOCK",
-                color = if (stopped) Danger else Warn
-            )
+            StatusPill(pillText, pillColor)
         }
 
         // ---------- Video ----------
@@ -90,111 +165,116 @@ fun ControlScreen(modifier: Modifier = Modifier) {
                 .border(1.dp, LineColor, RoundedCornerShape(20.dp)),
             contentAlignment = Alignment.Center
         ) {
-            // When Stage 2 is done, replace this Text with:
-            // CameraPreview(url = "http://192.168.4.1/stream", modifier = Modifier.fillMaxSize())
+            // Replace this Text with your CameraPreview(...) when video is ready
             CameraPreview(url = "http://192.168.4.1/stream", modifier = Modifier.fillMaxSize())
-            Box(Modifier.align(Alignment.TopStart).padding(12.dp)) {
-                StatusPill("CAMERA OFFLINE", Muted)
+        }
+
+        // ---------- Connection ----------
+        Panel {
+            SectionLabel("COMM LINK")
+            Spacer(Modifier.height(8.dp))
+            Text(link.message, color = Color.White, fontSize = 14.sp)
+            Text("Last reply: $lastReply", color = Muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = {
+                    if (link.status == LinkStatus.IDLE) connectWithPermission() else sender.disconnect()
+                },
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+                shape = RoundedCornerShape(14.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (link.status == LinkStatus.IDLE) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.secondary,
+                    contentColor = if (link.status == LinkStatus.IDLE) Color(0xFF04121A) else Color.White
+                )
+            ) {
+                Text(
+                    when (link.status) {
+                        LinkStatus.IDLE -> "CONNECT TO ${UranProtocol.DEVICE_NAME}"
+                        LinkStatus.READY -> "DISCONNECT"
+                        else -> "CANCEL"
+                    },
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
 
         // ---------- Mode ----------
-        ModeToggle(mode = mode, enabled = !stopped) {
-            mode = it
-            addLog("MODE -> $it")
-        }
-        if (mode == "AUTO" && !stopped) {
-            Text(
-                "AUTO: target following (simulated). Manual controls are locked.",
-                color = Warn,
-                fontSize = 12.sp
-            )
-        }
+        ModeToggle()
 
         // ---------- Direction pad ----------
-        Panel {
-            SectionLabel("MOVE")
-            Spacer(Modifier.height(10.dp))
-            Column(
-                Modifier.fillMaxWidth(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                HoldButton("▲", manualEnabled, Modifier.size(72.dp), { send(pitch = 30) }, { send() })
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    HoldButton("◀", manualEnabled, Modifier.size(72.dp), { send(roll = -30) }, { send() })
-                    Spacer(Modifier.size(72.dp))
-                    HoldButton("▶", manualEnabled, Modifier.size(72.dp), { send(roll = 30) }, { send() })
-                }
-                HoldButton("▼", manualEnabled, Modifier.size(72.dp), { send(pitch = -30) }, { send() })
-            }
-            Spacer(Modifier.height(14.dp))
-            Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
-            ) {
-                HoldButton("YAW L", manualEnabled, Modifier.weight(1f).height(52.dp), { send(yaw = -30) }, { send() })
-                HoldButton("YAW R", manualEnabled, Modifier.weight(1f).height(52.dp), { send(yaw = 30) }, { send() })
-            }
-        }
-
-        // ---------- Throttle ----------
         Panel {
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                SectionLabel("THROTTLE")
+                SectionLabel("MOVE")
                 Text(
-                    "${throttle.toInt()}%",
-                    fontSize = 24.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (manualEnabled) MaterialTheme.colorScheme.primary else Muted
+                    "R $roll  P $pitch  Y $yaw",
+                    color = if (manualEnabled) MaterialTheme.colorScheme.primary else Muted,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 13.sp
                 )
             }
-            Slider(
-                value = throttle,
-                onValueChange = { throttle = it },
-                onValueChangeFinished = { send() },
-                valueRange = 0f..100f,
-                enabled = manualEnabled,
-                colors = SliderDefaults.colors(
-                    thumbColor = MaterialTheme.colorScheme.primary,
-                    activeTrackColor = MaterialTheme.colorScheme.primary,
-                    inactiveTrackColor = LineColor,
-                    disabledThumbColor = Color(0xFF475569),
-                    disabledActiveTrackColor = Color(0xFF334155),
-                    disabledInactiveTrackColor = LineColor
-                )
-            )
+            Spacer(Modifier.height(10.dp))
+            Column(
+                Modifier.fillMaxWidth(),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                HoldButton("▲", manualEnabled, Modifier.size(72.dp), { pitch = STEP }, { pitch = 0 })
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    HoldButton("◀", manualEnabled, Modifier.size(72.dp), { roll = -STEP }, { roll = 0 })
+                    Spacer(Modifier.size(72.dp))
+                    HoldButton("▶", manualEnabled, Modifier.size(72.dp), { roll = STEP }, { roll = 0 })
+                }
+                HoldButton("▼", manualEnabled, Modifier.size(72.dp), { pitch = -STEP }, { pitch = 0 })
+            }
+            Spacer(Modifier.height(14.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                HoldButton("YAW L", manualEnabled, Modifier.weight(1f).height(52.dp), { yaw = -STEP }, { yaw = 0 })
+                HoldButton("YAW R", manualEnabled, Modifier.weight(1f).height(52.dp), { yaw = STEP }, { yaw = 0 })
+            }
+            Spacer(Modifier.height(8.dp))
+            Text("Throttle: reserved in v0.1 (always 0)", color = Muted, fontSize = 12.sp)
         }
 
-        // ---------- Emergency stop ----------
-        Button(
-            onClick = {
-                if (stopped) {
-                    stopped = false
-                    addLog("RESET")
-                } else {
-                    stopped = true
-                    throttle = 0f
-                    send()
-                    addLog("EMERGENCY STOP")
-                }
-            },
-            modifier = Modifier.fillMaxWidth().height(60.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = if (stopped) Ok else Danger,
-                contentColor = Color.White
-            )
-        ) {
-            Text(
-                if (stopped) "RESET" else "EMERGENCY STOP",
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold
-            )
+        // ---------- Safety ----------
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(
+                onClick = {
+                    roll = 0; pitch = 0; yaw = 0
+                    addLog(if (sender.sendDisarm()) "TX DISARM" else "DISARM NOT SENT (not connected)")
+                },
+                modifier = Modifier.weight(1f).height(60.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Warn, contentColor = Color(0xFF1A1200))
+            ) { Text("DISARM", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
+
+            Button(
+                onClick = {
+                    if (stopped) {
+                        stopped = false
+                        addLog("APP RESET (app side only)")
+                    } else {
+                        roll = 0; pitch = 0; yaw = 0
+                        stopped = true
+                        addLog(if (sender.sendEstop()) "TX ESTOP" else "ESTOP NOT SENT (not connected)")
+                    }
+                },
+                modifier = Modifier.weight(1f).height(60.dp),
+                shape = RoundedCornerShape(16.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (stopped) Ok else Danger,
+                    contentColor = Color.White
+                )
+            ) {
+                Text(if (stopped) "RESET" else "E-STOP", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        if (stopped) {
+            Text("E-STOP sent. Controls locked. RESET unlocks the app only.", color = Danger, fontSize = 12.sp)
         }
 
         // ---------- Log ----------
@@ -205,12 +285,7 @@ fun ControlScreen(modifier: Modifier = Modifier) {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 SectionLabel("LOG")
-                Text(
-                    "Clear",
-                    color = Muted,
-                    fontSize = 12.sp,
-                    modifier = Modifier.clickable { log.clear() }
-                )
+                Text("Clear", color = Muted, fontSize = 12.sp, modifier = Modifier.clickable { log.clear() })
             }
             Spacer(Modifier.height(8.dp))
             Column(
@@ -221,9 +296,9 @@ fun ControlScreen(modifier: Modifier = Modifier) {
                     .padding(10.dp)
             ) {
                 if (log.isEmpty()) {
-                    Text("No commands yet", color = Color(0xFF475569), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
+                    Text("No messages yet", color = Color(0xFF475569), fontFamily = FontFamily.Monospace, fontSize = 12.sp)
                 }
-                log.take(8).forEach {
+                log.take(12).forEach {
                     Text(it, color = Ok, fontFamily = FontFamily.Monospace, fontSize = 12.sp)
                 }
             }
@@ -266,8 +341,9 @@ private fun StatusPill(text: String, color: Color) {
     }
 }
 
+// AUTO is not implemented in v0.1, so it is shown but disabled
 @Composable
-private fun ModeToggle(mode: String, enabled: Boolean, onChange: (String) -> Unit) {
+private fun ModeToggle() {
     Row(
         Modifier
             .fillMaxWidth()
@@ -276,25 +352,18 @@ private fun ModeToggle(mode: String, enabled: Boolean, onChange: (String) -> Uni
             .border(1.dp, LineColor, RoundedCornerShape(14.dp))
             .padding(4.dp)
     ) {
-        listOf("MANUAL", "AUTO").forEach { m ->
-            val selected = mode == m
-            val accent = if (m == "AUTO") Warn else MaterialTheme.colorScheme.primary
-            Box(
-                Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(if (selected) accent else Color.Transparent)
-                    .clickable(enabled = enabled) { onChange(m) }
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(
-                    m,
-                    fontWeight = FontWeight.Bold,
-                    color = if (selected) Color(0xFF04121A) else Muted
-                )
-            }
-        }
+        Box(
+            Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(10.dp))
+                .background(MaterialTheme.colorScheme.primary)
+                .padding(vertical = 12.dp),
+            contentAlignment = Alignment.Center
+        ) { Text("MANUAL", fontWeight = FontWeight.Bold, color = Color(0xFF04121A)) }
+        Box(
+            Modifier.weight(1f).padding(vertical = 12.dp),
+            contentAlignment = Alignment.Center
+        ) { Text("AUTO (later)", fontWeight = FontWeight.Bold, color = Color(0xFF475569)) }
     }
 }
 
