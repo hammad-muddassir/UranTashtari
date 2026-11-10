@@ -1,16 +1,16 @@
 package com.uran.tashtari
 
 import android.graphics.Color as AndroidColor
-import androidx.activity.SystemBarStyle
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
 import androidx.compose.ui.Modifier
-import com.uran.tashtari.ui.ControlScreen
+import com.uran.tashtari.ui.AppRoot
 import com.uran.tashtari.ui.theme.UranTashtariTheme
 
 class MainActivity : ComponentActivity() {
@@ -23,7 +23,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             UranTashtariTheme {
                 Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    ControlScreen(modifier = Modifier.padding(innerPadding))
+                    AppRoot(modifier = Modifier.padding(innerPadding))
                 }
             }
         }
