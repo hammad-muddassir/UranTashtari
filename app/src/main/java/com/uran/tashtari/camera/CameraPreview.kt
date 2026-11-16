@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -18,19 +19,26 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
+import kotlin.math.min
 
 @Composable
 fun CameraPreview(
     url: String,
     modifier: Modifier = Modifier,
-    onFrame: (Bitmap) -> Unit = {}   // Rayyan plugs his detector in here
+    onFrame: (Bitmap) -> Unit = {},
+    onTap: (Float, Float) -> Unit = { _, _ -> }
 ) {
     val context = LocalContext.current
     val latestOnFrame by rememberUpdatedState(onFrame)
@@ -39,6 +47,8 @@ fun CameraPreview(
     var fps by remember { mutableFloatStateOf(0f) }
     var size by remember { mutableStateOf("-") }
     var reconnects by remember { mutableIntStateOf(0) }
+    var containerSize by remember { mutableStateOf(IntSize.Zero) }
+    val latestOnTap by rememberUpdatedState(onTap)
 
     // Route traffic over the camera Wi-Fi even though it has no internet
     DisposableEffect(Unit) {
@@ -52,16 +62,18 @@ fun CameraPreview(
     }
 
     LaunchedEffect(url) {
+        frame = null
         while (isActive) {
             try {
                 message = "Connecting..."
                 var count = 0
                 var windowStart = System.currentTimeMillis()
                 mjpegFrames(url).conflate().collect { bmp ->
+                    // Image analysis can be CPU-heavy; keep it off the Compose/UI thread.
+                    withContext(Dispatchers.Default) { latestOnFrame(bmp) }
                     frame = bmp.asImageBitmap()
                     size = "${bmp.width}x${bmp.height}"
                     message = ""
-                    latestOnFrame(bmp)
                     count++
                     val now = System.currentTimeMillis()
                     if (now - windowStart >= 1000) {
@@ -84,7 +96,29 @@ fun CameraPreview(
         }
     }
 
-    Box(modifier.background(Color.Black), contentAlignment = Alignment.Center) {
+    Box(
+        modifier
+            .background(Color.Black)
+            .onSizeChanged { containerSize = it }
+            .pointerInput(frame?.width, frame?.height, containerSize) {
+                detectTapGestures { point ->
+                    val image = frame ?: return@detectTapGestures
+                    if (containerSize.width <= 0 || containerSize.height <= 0) return@detectTapGestures
+                    val scale = min(
+                        containerSize.width.toFloat() / image.width,
+                        containerSize.height.toFloat() / image.height
+                    )
+                    val shownWidth = image.width * scale
+                    val shownHeight = image.height * scale
+                    val left = (containerSize.width - shownWidth) / 2f
+                    val top = (containerSize.height - shownHeight) / 2f
+                    val x = (point.x - left) / shownWidth
+                    val y = (point.y - top) / shownHeight
+                    if (x in 0f..1f && y in 0f..1f) latestOnTap(x, y)
+                }
+            },
+        contentAlignment = Alignment.Center
+    ) {
         frame?.let {
             Image(
                 bitmap = it,
