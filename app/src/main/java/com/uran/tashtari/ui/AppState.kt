@@ -46,6 +46,7 @@ class UranAppState(val sender: CommandSender) {
     // ----- event log -----
     val log = mutableStateListOf<LogEntry>()
     val battery = BatteryMonitor()
+    val flight = FlightTelemetry()
 
     fun addLog(tag: String, text: String) {
         log.add(0, LogEntry(System.currentTimeMillis(), tag, text))
@@ -82,6 +83,12 @@ class UranAppState(val sender: CommandSender) {
             if (battery.level != levelBefore) addLog("BAT", "level $levelBefore -> ${battery.level}")
             return
         }
+        val ft = flight.handleLine(line, SystemClock.elapsedRealtime())
+        if (ft != null) {
+            if (!ft && flight.rejected % 20 == 1) addLog("ERR", "TELEM rejected: ${flight.lastRejected}")
+            flight.takeEvents().forEach { addLog("FLT", it) }   // state changes only, never every packet
+            return
+        }
         val p = line.split(",")
         if (p.size >= 3 && p[0] == "ACK" && p[1] == "COMM_RC") {
             val t = SystemClock.elapsedRealtime()
@@ -114,15 +121,25 @@ class UranAppState(val sender: CommandSender) {
         addLog("TX", if (sent) "ESTOP" else "ESTOP NOT SENT (not connected). UI locked.")
     }
 
-    // Unlocks THIS APP only. It never implies the Flight latch was cleared.
+    // Unlocks THIS APP only. If Flight telemetry is live, the Flight state decides.
     fun resetUi() {
+        val f = flight
+        val live = f.stateFresh(now)
+        if (live && f.estopLatched == true) {
+            addLog("UI", "RESET UI refused: Flight still reports ESTOP LATCHED. Physically reset Flight first.")
+            return
+        }
         stopped = false
-        addLog("UI", "RESET UI. Flight ESTOP state is NOT confirmed.")
+        if (live && f.estopLatched == false) estopSent = false
+        addLog("UI", if (live) "RESET UI. Flight confirms ESTOP is clear." else "RESET UI. Flight ESTOP state is NOT confirmed.")
     }
 }
 
 // Real values only. Anything without a data source stays UNKNOWN.
 fun healthItems(state: UranAppState, link: LinkState): List<HealthItem> {
+    val now = state.now
+    val f = state.flight
+
     val ble = when (link.status) {
         LinkStatus.IDLE ->
             HealthItem("ANDROID-COMM BLE", "DISCONNECTED", Health.UNKNOWN, link.message)
@@ -135,17 +152,60 @@ fun healthItems(state: UranAppState, link: LinkState): List<HealthItem> {
             else
                 HealthItem("ANDROID-COMM BLE", "CONNECTED", Health.OK, link.message)
     }
-    val pending = "No Flight telemetry channel yet (Stages 3 and 5)"
-    return listOf(
-        ble,
-        HealthItem("COMM-FLIGHT UART", "UNKNOWN", Health.UNKNOWN, pending),
-        HealthItem("FLIGHT MPU", "UNKNOWN", Health.UNKNOWN, pending),
-        HealthItem("SIMULATION", "UNKNOWN", Health.UNKNOWN, pending),
-        if (state.estopSent)
+
+    val uart = when {
+        link.status != LinkStatus.READY ->
+            HealthItem("COMM-FLIGHT UART", "UNKNOWN", Health.UNKNOWN, "Phone is not connected to COMM")
+        f.commFresh(now) && f.uartAlive == false ->
+            HealthItem("COMM-FLIGHT UART", "DOWN", Health.BAD, "COMM reports no heartbeat from Flight")
+        f.anyFlightFresh(now) ->
+            HealthItem("COMM-FLIGHT UART", "CONNECTED", Health.OK, "Flight telemetry is arriving through COMM")
+        f.anyFlightEver() ->
+            HealthItem("COMM-FLIGHT UART", "STALE", Health.WARN,
+                "No Flight telemetry for ${now - f.lastFlightMs()} ms")
+        f.commFresh(now) && f.uartAlive == true ->
+            HealthItem("COMM-FLIGHT UART", "HEARTBEAT", Health.WARN,
+                "COMM sees Flight, but no Flight telemetry has arrived yet")
+        else ->
+            HealthItem("COMM-FLIGHT UART", "UNKNOWN", Health.UNKNOWN,
+                "No telemetry or COMM status lines received (firmware must send them)")
+    }
+
+    val stateStale = f.lastStateMs != 0L && !f.stateFresh(now)
+    val noState = HealthItem("", "", Health.UNKNOWN, "No Flight state received yet")
+
+    val mpu = when {
+        f.lastStateMs == 0L -> noState.copy(label = "FLIGHT MPU", value = "UNKNOWN")
+        stateStale -> HealthItem("FLIGHT MPU", "STALE", Health.WARN, "Flight state is ${now - f.lastStateMs} ms old")
+        f.mpuOk == true -> HealthItem("FLIGHT MPU", "OK", Health.OK, "Flight reports the MPU is healthy")
+        else -> HealthItem("FLIGHT MPU", "FAULT", Health.BAD, "Flight reports an MPU fault")
+    }
+
+    val sim = when {
+        f.lastStateMs == 0L -> noState.copy(label = "SIMULATION", value = "UNKNOWN")
+        stateStale -> HealthItem("SIMULATION", "STALE", Health.WARN, "Flight state is ${now - f.lastStateMs} ms old")
+        else -> when (f.simState) {
+            "ON" -> HealthItem("SIMULATION", "ON", Health.WARN, "Virtual outputs may be nonzero. Simulation only.")
+            "READY" -> HealthItem("SIMULATION", "READY", Health.OK, "Calibrated. Not running.")
+            "ESTOP" -> HealthItem("SIMULATION", "ESTOP", Health.BAD, "Flight is in ESTOP")
+            else -> HealthItem("SIMULATION", "INACTIVE", Health.UNKNOWN, "Not calibrated or not running")
+        }
+    }
+
+    val estop = when {
+        f.stateFresh(now) && f.estopLatched == true ->
+            HealthItem("FLIGHT ESTOP", "LATCHED", Health.BAD,
+                "Flight reports ESTOP latched. Only a physical Flight reset clears it.")
+        f.stateFresh(now) && f.estopLatched == false ->
+            HealthItem("FLIGHT ESTOP", "CLEAR", Health.OK, "Flight reports no ESTOP latch")
+        stateStale ->
+            HealthItem("FLIGHT ESTOP", "STALE", Health.WARN, "Cannot confirm. Flight state is ${now - f.lastStateMs} ms old")
+        state.estopSent ->
             HealthItem("FLIGHT ESTOP", "LATCHED?", Health.BAD,
                 "ESTOP was sent. Only a physical Flight reset clears it. The app cannot confirm yet.")
-        else
-            HealthItem("FLIGHT ESTOP", "UNKNOWN", Health.UNKNOWN, pending),
-        batteryHealthItem(state)
-    )
+        else ->
+            HealthItem("FLIGHT ESTOP", "UNKNOWN", Health.UNKNOWN, "No Flight state received yet")
+    }
+
+    return listOf(ble, uart, mpu, sim, estop, batteryHealthItem(state))
 }

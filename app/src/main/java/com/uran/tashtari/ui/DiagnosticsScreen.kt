@@ -47,13 +47,45 @@ fun DiagnosticsScreen(state: UranAppState, modifier: Modifier = Modifier) {
         }
 
         Panel {
+            SectionLabel("FLIGHT STATE")
+            Spacer(Modifier.height(8.dp))
+            val stateLive = state.flight.stateFresh(state.now)
+            StatRow("Simulation state", if (stateLive) state.flight.simState ?: "--" else "--")
+            StatRow("Level calibrated", if (stateLive) yesNo(state.flight.calibrated) else "--")
+            StatRow("Outputs disarmed", if (stateLive) yesNo(state.flight.disarmed) else "--")
+            StatRow("Flight sees fresh RC", if (stateLive) yesNo(state.flight.rcFresh) else "--")
+            StatRow(
+                "Pilot link (COMM)",
+                if (state.flight.commFresh(state.now)) yesNo(state.flight.pilotLink) else "--"
+            )
+            StatRow(
+                "Last Flight telemetry",
+                if (!state.flight.anyFlightEver()) "never"
+                else "${state.now - state.flight.lastFlightMs()} ms ago"
+            )
+            StatRow("Telemetry lines ok / rejected", "${state.flight.packets} / ${state.flight.rejected}")
+            if (state.flight.rejected > 0) {
+                StatRow("Last rejected", state.flight.lastRejected)
+            }
+        }
+
+        Panel {
             SectionLabel("FLIGHT ATTITUDE")
             Spacer(Modifier.height(8.dp))
-            StatRow("Roll", "UNAVAILABLE")
-            StatRow("Pitch", "UNAVAILABLE")
-            StatRow("Yaw rate (GyroZ)", "UNAVAILABLE")
+            val attLive = state.flight.attFresh(state.now)
+            StatRow("Roll", if (attLive) "%.1f deg".format(state.flight.rollDeg ?: 0f) else "--")
+            StatRow("Pitch", if (attLive) "%.1f deg".format(state.flight.pitchDeg ?: 0f) else "--")
+            StatRow("Yaw rate (GyroZ)", if (attLive) "%.1f deg/s".format(state.flight.gyroZ ?: 0f) else "--")
+            StatRow(
+                "Attitude data",
+                when {
+                    state.flight.lastAttMs == 0L -> "no data yet"
+                    attLive -> "live"
+                    else -> "STALE (${state.now - state.flight.lastAttMs} ms old)"
+                }
+            )
             Text(
-                "No Flight telemetry reaches the app yet. Values appear in Stage 5 and turn STALE when they stop updating.",
+                "Shown only while Flight telemetry is fresh. Units follow the proposed protocol: degrees and deg/s. Confirm with Flight.",
                 color = DisabledGrey, fontSize = 11.sp
             )
         }
@@ -61,18 +93,23 @@ fun DiagnosticsScreen(state: UranAppState, modifier: Modifier = Modifier) {
         Panel {
             SectionLabel("VIRTUAL MOTORS (simulation only)")
             Spacer(Modifier.height(10.dp))
+            val m = state.flight.motors.takeIf { state.flight.motFresh(state.now) }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                MotorBar("FL", null)
-                MotorBar("FR", null)
+                MotorBar("FL", m?.getOrNull(0))
+                MotorBar("FR", m?.getOrNull(1))
             }
             Spacer(Modifier.height(10.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                MotorBar("RL", null)
-                MotorBar("RR", null)
+                MotorBar("RL", m?.getOrNull(3))
+                MotorBar("RR", m?.getOrNull(2))
             }
             Spacer(Modifier.height(8.dp))
             Text(
-                "N/A until Flight sends real values. Never physical motor output.",
+                when {
+                    state.flight.lastMotMs == 0L -> "N/A: no motor telemetry yet."
+                    m == null -> "STALE: no motor update for ${state.now - state.flight.lastMotMs} ms."
+                    else -> "Live from Flight. Virtual simulation values only."
+                },
                 color = DisabledGrey, fontSize = 11.sp
             )
         }
@@ -198,4 +235,10 @@ private fun MotorBar(label: String, value: Int?) {
         Text(label, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Text(value?.toString() ?: "N/A", color = Muted, fontSize = 11.sp)
     }
+}
+
+private fun yesNo(b: Boolean?): String = when (b) {
+    true -> "YES"
+    false -> "NO"
+    null -> "--"
 }
