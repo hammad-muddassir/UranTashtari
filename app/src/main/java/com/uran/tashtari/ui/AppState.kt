@@ -45,6 +45,7 @@ class UranAppState(val sender: CommandSender) {
 
     // ----- event log -----
     val log = mutableStateListOf<LogEntry>()
+    val battery = BatteryMonitor()
 
     fun addLog(tag: String, text: String) {
         log.add(0, LogEntry(System.currentTimeMillis(), tag, text))
@@ -73,6 +74,14 @@ class UranAppState(val sender: CommandSender) {
 
     // Every joystick heartbeat is ACKed by COMM, so ACK,COMM_RC,n is counted, not logged
     fun handleReply(line: String) {
+        // Battery telemetry: parsed here, never logged per packet (avoids flooding the log)
+        val levelBefore = battery.level
+        val batResult = battery.handleLine(line, SystemClock.elapsedRealtime())
+        if (batResult != null) {
+            if (!batResult && battery.rejected % 20 == 1) addLog("ERR", "BAT rejected: ${battery.lastRejected}")
+            if (battery.level != levelBefore) addLog("BAT", "level $levelBefore -> ${battery.level}")
+            return
+        }
         val p = line.split(",")
         if (p.size >= 3 && p[0] == "ACK" && p[1] == "COMM_RC") {
             val t = SystemClock.elapsedRealtime()
@@ -137,6 +146,6 @@ fun healthItems(state: UranAppState, link: LinkState): List<HealthItem> {
                 "ESTOP was sent. Only a physical Flight reset clears it. The app cannot confirm yet.")
         else
             HealthItem("FLIGHT ESTOP", "UNKNOWN", Health.UNKNOWN, pending),
-        HealthItem("CAMERA", "SEE CAMERA TAB", Health.UNKNOWN, "Stream status joins the dashboard in Stage 6")
+        batteryHealthItem(state)
     )
 }
