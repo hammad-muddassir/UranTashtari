@@ -613,7 +613,7 @@ Panel {
 
          Spacer(Modifier.height(8.dp))
 
-         Row(
+                  Row(
              Modifier.fillMaxWidth(),
              horizontalArrangement =
                  Arrangement.spacedBy(4.dp)
@@ -636,10 +636,11 @@ Panel {
                  }
              }
          }
-     }
+     }       // closes Panel (MOTOR TEST)
 
- }
-
+    }        // closes the scrollable Column
+   }         // closes Column(modifier.fillMaxSize())
+}            // closes fun ControlScreen
 
 
 @Composable
