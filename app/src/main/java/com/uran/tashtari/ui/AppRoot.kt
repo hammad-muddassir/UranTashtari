@@ -113,5 +113,3 @@ fun AppRoot(modifier: Modifier = Modifier) {
         BottomTabs(tab) { tab = it }
     }
 }
-
-hello jee
