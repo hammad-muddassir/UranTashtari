@@ -23,117 +23,443 @@ private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
 
 fun LogEntry.format(): String = "${timeFormat.format(Date(timeMs))} [$tag] $text"
 
-class UranAppState(val sender: CommandSender) {
+class UranAppState(
+    val sender: CommandSender
+) {
+    enum class PreparePhase {
+        IDLE,
+        PREPARING,
+        READY,
+        FAILED
+    }
 
-    // ----- controls -----
     var roll by mutableIntStateOf(0)
     var pitch by mutableIntStateOf(0)
     var yaw by mutableIntStateOf(0)
-    var throttleSelected by mutableIntStateOf(0)   // not sent anywhere until Stage 4
-    var stopped by mutableStateOf(false)           // UI lock after ESTOP
-    var estopSent by mutableStateOf(false)         // stays true until Flight itself reports the latch cleared (Stage 5)
 
-    // ----- link statistics (real values from COMM replies) -----
+    var throttleSelected by mutableIntStateOf(0)
+    var throttleTransmitted by mutableIntStateOf(0)
+
+    var stopped by mutableStateOf(false)
+    var estopSent by mutableStateOf(false)
+
+    private var estopRequestedAtMs = 0L
+    private var estopObservedLatched = false
+
+    // Manual, non-electronic safety checks.
+    var cellsVerified by mutableStateOf(false)
+    var benchAreaVerified by mutableStateOf(false)
+
+    var preparePhase by mutableStateOf(
+        PreparePhase.IDLE
+    )
+
+    var prepareMessage by mutableStateOf(
+        "Preparation not started"
+    )
+
+    var prepareToken by mutableIntStateOf(0)
+
     var lastReply by mutableStateOf("-")
-    var now by mutableLongStateOf(SystemClock.elapsedRealtime())
+
+    var now by mutableLongStateOf(
+        SystemClock.elapsedRealtime()
+    )
+
     var rcSent by mutableIntStateOf(0)
     var rcAcks by mutableIntStateOf(0)
+
     var lastRcAckAt by mutableLongStateOf(0L)
     var rttAvgMs by mutableFloatStateOf(0f)
     var rttMaxMs by mutableLongStateOf(0L)
+
     private val rcSentAt = LongArray(256)
 
-    // ----- event log -----
-    val log = mutableStateListOf<LogEntry>()
     val battery = BatteryMonitor()
     val flight = FlightTelemetry()
 
+    val log = mutableStateListOf<LogEntry>()
+    val trafficLog = mutableStateListOf<LogEntry>()
+
+    var lastTx by mutableStateOf<LogEntry?>(null)
+    var lastRx by mutableStateOf<LogEntry?>(null)
+    var lastError by mutableStateOf<LogEntry?>(null)
+
+    var verboseTraffic by mutableStateOf(false)
+
     fun addLog(tag: String, text: String) {
-        log.add(0, LogEntry(System.currentTimeMillis(), tag, text))
-        if (log.size > 100) log.removeAt(log.lastIndex)
+        log.add(
+            0,
+            LogEntry(
+                System.currentTimeMillis(),
+                tag,
+                text
+            )
+        )
+
+        if (log.size > 100) {
+            log.removeAt(log.lastIndex)
+        }
     }
 
-    fun logText(): String = log.asReversed().joinToString("\n") { it.format() }
+    fun logText(): String =
+        log.asReversed().joinToString("\n") {
+            it.format()
+        }
 
-    fun clearLog() = log.clear()
+    fun clearLog() {
+        log.clear()
+    }
+
+    fun trafficText(): String =
+        trafficLog.asReversed().joinToString("\n") {
+            it.format()
+        }
+
+    fun clearTraffic() {
+        trafficLog.clear()
+    }
+
+    private fun recordWire(
+        tag: String,
+        text: String
+    ) {
+        val entry = LogEntry(
+            System.currentTimeMillis(),
+            tag,
+            text.trim()
+        )
+
+        if (tag == "TX") lastTx = entry
+        if (tag == "RX") lastRx = entry
+
+        if (text.startsWith("ERR")) {
+            lastError = entry
+        }
+
+        val repetitive =
+            (tag == "TX" &&
+                    text.startsWith("C,")) ||
+                    (tag == "RX" &&
+                            text.startsWith("ACK,COMM_RC,"))
+
+        if (repetitive && !verboseTraffic) {
+            return
+        }
+
+        trafficLog.add(0, entry)
+
+        if (trafficLog.size > 150) {
+            trafficLog.removeAt(
+                trafficLog.lastIndex
+            )
+        }
+    }
 
     fun neutralAll() {
-        roll = 0; pitch = 0; yaw = 0
+        roll = 0
+        pitch = 0
+        yaw = 0
         throttleSelected = 0
     }
 
-    fun noteRcSent(seq: Int) {
-        rcSentAt[seq and 0xFF] = SystemClock.elapsedRealtime()
+    fun noteBleWrite(packet: String) {
+        recordWire("TX", packet)
+
+        if (packet.startsWith("C,")) {
+            val parts = packet.split(",")
+
+            if (parts.size == 7) {
+                val seq = parts[1].toIntOrNull()
+                val throttle =
+                    parts[6].toIntOrNull()
+
+                if (seq != null) {
+                    noteRcSent(seq)
+                }
+
+                if (throttle != null) {
+                    throttleTransmitted =
+                        throttle.coerceIn(0, 100)
+                }
+            }
+        }
+    }
+
+    private fun noteRcSent(seq: Int) {
+        rcSentAt[seq and 0xFF] =
+            SystemClock.elapsedRealtime()
+
         rcSent++
     }
 
     fun resetLinkStats() {
-        rcSent = 0; rcAcks = 0; lastRcAckAt = 0L
-        rttAvgMs = 0f; rttMaxMs = 0L
+        rcSent = 0
+        rcAcks = 0
+        lastRcAckAt = 0L
+
+        rttAvgMs = 0f
+        rttMaxMs = 0L
+
         rcSentAt.fill(0L)
     }
 
-    // Every joystick heartbeat is ACKed by COMM, so ACK,COMM_RC,n is counted, not logged
     fun handleReply(line: String) {
-        // Battery telemetry: parsed here, never logged per packet (avoids flooding the log)
-        val levelBefore = battery.level
-        val batResult = battery.handleLine(line, SystemClock.elapsedRealtime())
+        recordWire("RX", line)
+
+        val time =
+            SystemClock.elapsedRealtime()
+
+        val previousLevel = battery.level
+
+        val batResult =
+            battery.handleLine(line, time)
+
         if (batResult != null) {
-            if (!batResult && battery.rejected % 20 == 1) addLog("ERR", "BAT rejected: ${battery.lastRejected}")
-            if (battery.level != levelBefore) addLog("BAT", "level $levelBefore -> ${battery.level}")
+            if (
+                !batResult &&
+                battery.rejected % 20 == 1
+            ) {
+                addLog(
+                    "ERR",
+                    "BAT rejected: " +
+                            battery.lastRejected
+                )
+            }
+
+            if (
+                battery.level != previousLevel
+            ) {
+                addLog(
+                    "BAT",
+                    "level $previousLevel -> " +
+                            battery.level
+                )
+            }
+
             return
         }
-        val ft = flight.handleLine(line, SystemClock.elapsedRealtime())
-        if (ft != null) {
-            if (!ft && flight.rejected % 20 == 1) addLog("ERR", "TELEM rejected: ${flight.lastRejected}")
-            flight.takeEvents().forEach { addLog("FLT", it) }   // state changes only, never every packet
+
+        val telemResult =
+            flight.handleLine(line, time)
+
+        if (telemResult != null) {
+            if (
+                !telemResult &&
+                flight.rejected % 20 == 1
+            ) {
+                addLog(
+                    "ERR",
+                    "Telemetry rejected: " +
+                            flight.lastRejected
+                )
+            }
+
+            if (
+                telemResult &&
+                flight.estopLatched == true
+            ) {
+                stopped = true
+                estopSent = true
+                estopObservedLatched = true
+
+                prepareToken++
+                preparePhase =
+                    PreparePhase.FAILED
+                prepareMessage =
+                    "Flight E-STOP is latched"
+            }
+
+            flight.takeEvents().forEach {
+                addLog("FLT", it)
+            }
+
             return
         }
+
         val p = line.split(",")
-        if (p.size >= 3 && p[0] == "ACK" && p[1] == "COMM_RC") {
-            val t = SystemClock.elapsedRealtime()
+
+        if (
+            p.size >= 3 &&
+            p[0] == "ACK" &&
+            p[1] == "COMM_RC"
+        ) {
+            val t =
+                SystemClock.elapsedRealtime()
+
             rcAcks++
             lastRcAckAt = t
-            p[2].trim().toIntOrNull()?.let { s ->
-                val sent = rcSentAt[s and 0xFF]
-                val rtt = t - sent
-                if (sent > 0L && rtt in 0..5000) {
-                    rttAvgMs = if (rttAvgMs == 0f) rtt.toFloat() else rttAvgMs * 0.9f + rtt * 0.1f
-                    if (rtt > rttMaxMs) rttMaxMs = rtt
+
+            p[2].trim()
+                .toIntOrNull()
+                ?.let { seq ->
+
+                    val index = seq and 0xFF
+                    val sent = rcSentAt[index]
+                    val rtt = t - sent
+
+                    if (
+                        sent > 0L &&
+                        rtt in 0..5000
+                    ) {
+                        rttAvgMs =
+                            if (rttAvgMs == 0f) {
+                                rtt.toFloat()
+                            } else {
+                                rttAvgMs * 0.9f +
+                                        rtt * 0.1f
+                            }
+
+                        if (rtt > rttMaxMs) {
+                            rttMaxMs = rtt
+                        }
+
+                        rcSentAt[index] = 0L
+                    }
                 }
-            }
+
             return
         }
+
         lastReply = line
-        addLog(if (line.startsWith("ERR")) "ERR" else "COMM", line)
+
+        addLog(
+            if (line.startsWith("ERR")) {
+                "ERR"
+            } else {
+                "COMM"
+            },
+            line
+        )
     }
 
     fun disarm() {
         neutralAll()
-        addLog("TX", if (sender.sendDisarm()) "DISARM" else "DISARM NOT SENT (not connected)")
+
+        prepareToken++
+        preparePhase = PreparePhase.IDLE
+        prepareMessage =
+            "Preparation cancelled by DISARM"
+
+        val sent = sender.sendDisarm()
+
+        addLog(
+            "QUEUE",
+            if (sent) {
+                "DISARM queued"
+            } else {
+                "DISARM not sent: disconnected"
+            }
+        )
     }
 
     fun estop() {
         neutralAll()
+
+        prepareToken++
+        preparePhase = PreparePhase.FAILED
+        prepareMessage =
+            "Preparation cancelled by E-STOP"
+
         stopped = true
+        estopSent = true
+
+        estopObservedLatched = false
+        estopRequestedAtMs =
+            SystemClock.elapsedRealtime()
+
         val sent = sender.sendEstop()
-        if (sent) estopSent = true
-        addLog("TX", if (sent) "ESTOP" else "ESTOP NOT SENT (not connected). UI locked.")
+
+        addLog(
+            "QUEUE",
+            if (sent) {
+                "ESTOP queued; UI locked"
+            } else {
+                "ESTOP not sent; UI locked"
+            }
+        )
     }
 
-    // Unlocks THIS APP only. If Flight telemetry is live, the Flight state decides.
-    fun resetUi() {
-        val f = flight
-        val live = f.stateFresh(now)
-        if (live && f.estopLatched == true) {
-            addLog("UI", "RESET UI refused: Flight still reports ESTOP LATCHED. Physically reset Flight first.")
-            return
+    fun resetUi(): Boolean {
+        val time =
+            SystemClock.elapsedRealtime()
+
+        val confirmed =
+            sender.state.value.status ==
+                    LinkStatus.READY &&
+                    flight.stateFresh(time) &&
+                    flight.estopLatched == false &&
+                    flight.lastStateMs >
+                    estopRequestedAtMs &&
+                    estopObservedLatched
+
+        if (!confirmed) {
+            addLog(
+                "UI",
+                "RESET REFUSED: fresh Flight " +
+                        "ESTOP=0 after observed latch required"
+            )
+
+            return false
         }
+
+        neutralAll()
+
         stopped = false
-        if (live && f.estopLatched == false) estopSent = false
-        addLog("UI", if (live) "RESET UI. Flight confirms ESTOP is clear." else "RESET UI. Flight ESTOP state is NOT confirmed.")
+        estopSent = false
+        estopObservedLatched = false
+
+        preparePhase = PreparePhase.IDLE
+        prepareMessage =
+            "Reset confirmed by Flight"
+
+        addLog(
+            "UI",
+            "UI unlocked after Flight confirmation"
+        )
+
+        return true
+    }
+
+    fun canBenchReady(): Boolean {
+        val time =
+            SystemClock.elapsedRealtime()
+
+        return (
+                sender.state.value.status ==
+                        LinkStatus.READY &&
+                        !stopped &&
+                        cellsVerified &&
+                        benchAreaVerified &&
+                        flight.stateFresh(time) &&
+                        flight.legacyFresh(time) &&
+                        flight.flightMode == "BENCH_ONLY" &&
+                        flight.mpuOk == true &&
+                        flight.calibrated == true &&
+                        flight.flightLink == true &&
+                        flight.estopLatched == false &&
+                        flight.keyActive == true &&
+                        flight.escEnabled == true &&
+                        flight.benchRunning == false &&
+                        battery.isLive(time) &&
+                        battery.level == BatteryLevel.NORMAL
+                )
+    }
+
+    fun invalidatePreparation(reason: String) {
+        if (
+            preparePhase ==
+            PreparePhase.PREPARING ||
+            preparePhase ==
+            PreparePhase.READY
+        ) {
+            prepareToken++
+            preparePhase = PreparePhase.FAILED
+            prepareMessage = reason
+        }
     }
 }
+
 
 // Real values only. Anything without a data source stays UNKNOWN.
 fun healthItems(state: UranAppState, link: LinkState): List<HealthItem> {

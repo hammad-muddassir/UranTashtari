@@ -50,6 +50,70 @@ fun DiagnosticsScreen(state: UranAppState, modifier: Modifier = Modifier) {
             SectionLabel("FLIGHT STATE")
             Spacer(Modifier.height(8.dp))
             val stateLive = state.flight.stateFresh(state.now)
+            val legacyLive =
+                state.flight.legacyFresh(
+                    state.now
+                )
+
+            StatRow(
+                "Flight mode",
+                if (legacyLive) {
+                    state.flight.flightMode ?: "--"
+                } else {
+                    "--"
+                }
+            )
+
+            StatRow(
+                "Physical key",
+                if (legacyLive) {
+                    yesNo(state.flight.keyActive)
+                } else {
+                    "--"
+                }
+            )
+
+            StatRow(
+                "ESC outputs enabled",
+                if (legacyLive) {
+                    yesNo(state.flight.escEnabled)
+                } else {
+                    "--"
+                }
+            )
+
+            StatRow(
+                "Bench running",
+                if (legacyLive) {
+                    yesNo(state.flight.benchRunning)
+                } else {
+                    "--"
+                }
+            )
+
+            StatRow(
+                "Flight link",
+                if (legacyLive) {
+                    yesNo(state.flight.flightLink)
+                } else {
+                    "--"
+                }
+            )
+
+            StatRow(
+                "Flight E-STOP",
+                if (
+                    state.flight.stateFresh(
+                        state.now
+                    )
+                ) {
+                    yesNo(
+                        state.flight.estopLatched
+                    )
+                } else {
+                    "--"
+                }
+            )
             StatRow("Simulation state", if (stateLive) state.flight.simState ?: "--" else "--")
             StatRow("Level calibrated", if (stateLive) yesNo(state.flight.calibrated) else "--")
             StatRow("Outputs disarmed", if (stateLive) yesNo(state.flight.disarmed) else "--")
@@ -67,7 +131,43 @@ fun DiagnosticsScreen(state: UranAppState, modifier: Modifier = Modifier) {
             if (state.flight.rejected > 0) {
                 StatRow("Last rejected", state.flight.lastRejected)
             }
+            BatteryDetailPanel(state)
+
         }
+
+        Panel {
+            SectionLabel(
+                "BLE TRAFFIC SETTINGS"
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            Text(
+                if (state.verboseTraffic) {
+                    "Verbose TX/RX: ON"
+                } else {
+                    "Verbose TX/RX: OFF"
+                },
+                color =
+                    MaterialTheme.colorScheme.primary,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.clickable {
+                    state.verboseTraffic =
+                        !state.verboseTraffic
+                }
+            )
+
+            Spacer(Modifier.height(6.dp))
+
+            Text(
+                "When OFF, repetitive joystick " +
+                        "packets and ACK,COMM_RC replies " +
+                        "are hidden from the terminal.",
+                color = DisabledGrey,
+                fontSize = 11.sp
+            )
+        }
+
 
         Panel {
             SectionLabel("FLIGHT ATTITUDE")

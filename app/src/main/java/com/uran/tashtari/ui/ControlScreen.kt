@@ -22,12 +22,46 @@ import com.uran.tashtari.network.LinkStatus
 import com.uran.tashtari.network.UranProtocol
 import kotlin.math.max
 import kotlin.math.roundToInt
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.widget.Toast
+
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+
+import androidx.compose.ui.platform.LocalContext
+
 
 private const val AXIS_MAX = 20   // BLE v0.1 limit: -20..+20
 
 @Composable
-fun ControlScreen(state: UranAppState, onConnect: () -> Unit, modifier: Modifier = Modifier) {
-    val link by state.sender.state.collectAsState()
+fun ControlScreen(
+    state: UranAppState,
+    onConnect: () -> Unit,
+    onPrepare: () -> Unit,
+    modifier: Modifier = Modifier
+)
+ {
+     val context = LocalContext.current
+
+     var terminalExpanded by remember {
+         mutableStateOf(false)
+     }
+
+     val flightMode =
+         if (
+             state.flight.legacyFresh(
+                 state.now
+             )
+         ) {
+             state.flight.flightMode
+                 ?: "UNKNOWN"
+         } else {
+             "UNKNOWN"
+         }
+
+     val link by state.sender.state.collectAsState()
     val manualEnabled = link.status == LinkStatus.READY && !state.stopped
     val items = healthItems(state, link)
 
@@ -40,9 +74,45 @@ fun ControlScreen(state: UranAppState, onConnect: () -> Unit, modifier: Modifier
                 .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 8.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            ScreenHeader("Simulation only - v0.2 - no motors") {
-                if (state.stopped) StatusPill("UI LOCKED", Danger)
+            ScreenHeader(
+                "Flight mode: $flightMode | throttle locked"
+            ) {
+
+            if (state.stopped) StatusPill("UI LOCKED", Danger)
                 else StatusPill(items[0].value, items[0].health.tint())
+            }
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = state.cellsVerified,
+                    onCheckedChange = {
+                        state.cellsVerified = it
+                    }
+                )
+
+                Text(
+                    "3S LiPo cells individually checked safe",
+                    color = Muted,
+                    fontSize = 11.sp
+                )
+            }
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = state.benchAreaVerified,
+                    onCheckedChange = {
+                        state.benchAreaVerified = it
+                    }
+                )
+
+                Text(
+                    "Propellers removed and test area clear",
+                    color = Muted,
+                    fontSize = 11.sp
+                )
             }
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -52,12 +122,63 @@ fun ControlScreen(state: UranAppState, onConnect: () -> Unit, modifier: Modifier
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Warn, contentColor = Color(0xFF1A1200))
                 ) { Text("DISARM", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
+                Button(
+                    onClick = onPrepare,
+                    enabled =
+                        link.status ==
+                                LinkStatus.READY &&
+                                !state.stopped &&
+                                state.cellsVerified &&
+                                state.benchAreaVerified &&
+                                state.preparePhase !=
+                                UranAppState.PreparePhase.PREPARING,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(48.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Text(
+                        "PREPARE DRONE",
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+
+                val prepText =
+                    if (
+                        state.preparePhase ==
+                        UranAppState.PreparePhase.READY &&
+                        !state.canBenchReady()
+                    ) {
+                        "STALE: Repeat preparation"
+                    } else {
+                        "${state.preparePhase}: " +
+                                state.prepareMessage
+                    }
+
+                Text(
+                    prepText,
+                    color = when (
+                        state.preparePhase
+                    ) {
+                        UranAppState.PreparePhase.READY ->
+                            if (state.canBenchReady()) {
+                                Ok
+                            } else {
+                                Warn
+                            }
+
+                        UranAppState.PreparePhase.FAILED ->
+                            Danger
+
+                        else -> Muted
+                    },
+                    fontSize = 11.sp
+                )
 
                 Button(
                     onClick = {
                         if (state.stopped) {
                             state.resetUi()
-                            if (link.status == LinkStatus.IDLE) onConnect()
                         } else {
                             state.estop()
                         }
@@ -164,6 +285,191 @@ fun ControlScreen(state: UranAppState, onConnect: () -> Unit, modifier: Modifier
                 ) { Text("AUTO (later)", fontWeight = FontWeight.Bold, color = DisabledGrey) }
             }
             BatteryRow(state)
+            Panel {
+                SectionLabel(
+                    "THROTTLE + LIVE TX/RX"
+                )
+
+                Spacer(Modifier.height(10.dp))
+
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement =
+                        Arrangement.spacedBy(12.dp)
+                ) {
+                    Column(
+                        Modifier.weight(1f)
+                    ) {
+                        Text(
+                            "THROTTLE",
+                            color = Muted,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(Modifier.height(6.dp))
+
+                        Text(
+                            "Requested " +
+                                    "${state.throttleSelected}%",
+                            color = Color.White,
+                            fontFamily =
+                                FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+
+                        Text(
+                            "Written " +
+                                    "${state.throttleTransmitted}%",
+                            color = Warn,
+                            fontFamily =
+                                FontFamily.Monospace,
+                            fontSize = 11.sp
+                        )
+
+                        Text(
+                            "LOCKED - BENCH ONLY",
+                            color = Danger,
+                            fontSize = 10.sp
+                        )
+                    }
+
+                    Column(
+                        Modifier.weight(1f)
+                    ) {
+                        Text(
+                            "LIVE TX / RX",
+                            color = Muted,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+
+                        Spacer(Modifier.height(6.dp))
+
+                        Text(
+                            "TX: " +
+                                    (state.lastTx?.format() ?: "--"),
+                            color = Ok,
+                            fontSize = 10.sp,
+                            maxLines = 2
+                        )
+
+                        Text(
+                            "RX: " +
+                                    (state.lastRx?.format() ?: "--"),
+                            color = Color.White,
+                            fontSize = 10.sp,
+                            maxLines = 2
+                        )
+
+                        Text(
+                            "ERR: " +
+                                    (state.lastError?.text ?: "--"),
+                            color = Danger,
+                            fontSize = 10.sp,
+                            maxLines = 2
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                TextButton(
+                    onClick = {
+                        terminalExpanded =
+                            !terminalExpanded
+                    }
+                ) {
+                    Text(
+                        if (terminalExpanded) {
+                            "Hide terminal"
+                        } else {
+                            "Show terminal"
+                        }
+                    )
+                }
+
+                if (terminalExpanded) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement =
+                            Arrangement.SpaceBetween
+                    ) {
+                        TextButton(
+                            onClick = {
+                                val clipboard =
+                                    context.getSystemService(
+                                        ClipboardManager::class.java
+                                    )
+
+                                clipboard.setPrimaryClip(
+                                    ClipData.newPlainText(
+                                        "URAN TASHTRI TX/RX",
+                                        state.trafficText()
+                                    )
+                                )
+
+                                Toast.makeText(
+                                    context,
+                                    "Terminal copied",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        ) {
+                            Text("Copy")
+                        }
+
+                        TextButton(
+                            onClick = {
+                                state.clearTraffic()
+                            }
+                        ) {
+                            Text("Clear")
+                        }
+                    }
+
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 180.dp)
+                            .verticalScroll(
+                                rememberScrollState()
+                            )
+                            .background(
+                                Color(0xFF070C16)
+                            )
+                            .padding(8.dp)
+                    ) {
+                        if (
+                            state.trafficLog.isEmpty()
+                        ) {
+                            Text(
+                                "No TX/RX messages",
+                                color = Muted,
+                                fontSize = 11.sp
+                            )
+                        }
+
+                        state.trafficLog
+                            .take(150)
+                            .forEach { entry ->
+                                Text(
+                                    entry.format(),
+                                    color =
+                                        if (entry.tag == "TX") {
+                                            Ok
+                                        } else {
+                                            Muted
+                                        },
+                                    fontFamily =
+                                        FontFamily.Monospace,
+                                    fontSize = 10.sp
+                                )
+                            }
+                    }
+                }
+            }
+
             // ---------- Joysticks ----------
             Panel {
                 Row(
@@ -228,7 +534,12 @@ fun ControlScreen(state: UranAppState, onConnect: () -> Unit, modifier: Modifier
                 SectionLabel("THROTTLE STATE")
                 Spacer(Modifier.height(6.dp))
                 ThrottleRow("Requested (stick, UI only)", "${state.throttleSelected} %")
-                ThrottleRow("Transmitted to COMM", "NOT SENT (packet field is 0)", Warn)
+                ThrottleRow(
+                    "Written to COMM",
+                    "${state.throttleTransmitted}% " +
+                            "(physical throttle locked)",
+                    Warn
+                )
                 ThrottleRow("Flight-confirmed (simulation)", "UNKNOWN", Muted)
                 ThrottleRow("Physical motor throttle", "DISABLED", Danger)
             }
@@ -247,7 +558,51 @@ fun ControlScreen(state: UranAppState, onConnect: () -> Unit, modifier: Modifier
             Spacer(Modifier.height(8.dp))
         }
     }
-}
+     Panel {
+         SectionLabel(
+             "MOTOR TEST - FUTURE FIRMWARE"
+         )
+
+         Spacer(Modifier.height(8.dp))
+
+         Text(
+             "Disabled until COMM and Flight " +
+                     "implement verified BLE authorization " +
+                     "and motor-stop acknowledgements.",
+             color = DisabledGrey,
+             fontSize = 11.sp
+         )
+
+         Spacer(Modifier.height(8.dp))
+
+         Row(
+             Modifier.fillMaxWidth(),
+             horizontalArrangement =
+                 Arrangement.spacedBy(4.dp)
+         ) {
+             listOf(
+                 "FL", "FR", "RR", "RL", "ALL"
+             ).forEach { motor ->
+                 OutlinedButton(
+                     onClick = {},
+                     enabled = false,
+                     modifier =
+                         Modifier.weight(1f),
+                     contentPadding =
+                         PaddingValues(0.dp)
+                 ) {
+                     Text(
+                         motor,
+                         fontSize = 10.sp
+                     )
+                 }
+             }
+         }
+     }
+
+ }
+
+
 
 @Composable
 private fun StickBlock(

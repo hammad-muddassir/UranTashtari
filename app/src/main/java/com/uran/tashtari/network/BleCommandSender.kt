@@ -42,6 +42,12 @@ class BleCommandSender(private val context: Context) : CommandSender {
 
     private val _replies = MutableSharedFlow<String>(extraBufferCapacity = 32)
     override val replies: SharedFlow<String> = _replies.asSharedFlow()
+    private val _writes = MutableSharedFlow<String>(
+        extraBufferCapacity = 64
+    )
+
+    override val writes: SharedFlow<String> =
+        _writes.asSharedFlow()
 
     private val main = Handler(Looper.getMainLooper())
     private val adapter: BluetoothAdapter? =
@@ -54,12 +60,21 @@ class BleCommandSender(private val context: Context) : CommandSender {
 
     // ----- write queue: newest control packet wins; safety commands go first -----
     private val lock = Any()
+
     private var writing = false
     private var writeStartedAt = 0L
+
     private var pendingControl: String? = null
+
     private val pendingSafety = ArrayDeque<String>()
+    private val pendingCommands = ArrayDeque<String>()
+
+    private var currentWrite: String? = null
+
+    private val maxPendingCommands = 12
 
     private val rxBuffer = StringBuilder()
+
 
     private fun setState(status: LinkStatus, message: String) {
         _state.value = LinkState(status, message)
@@ -77,14 +92,19 @@ class BleCommandSender(private val context: Context) : CommandSender {
 
     // ------------------------------------------------------------ connect
     override fun connect() {
-        if (!hasPermission()) { setState(LinkStatus.IDLE, "Bluetooth permission missing"); return }
+        if (!hasPermission()) {
+            setState(LinkStatus.IDLE, "Bluetooth permission missing"); return
+        }
         val a = adapter
-        if (a == null || !a.isEnabled) { setState(LinkStatus.IDLE, "Turn Bluetooth on"); return }
+        if (a == null || !a.isEnabled) {
+            setState(LinkStatus.IDLE, "Turn Bluetooth on"); return
+        }
         if (_state.value.status != LinkStatus.IDLE) return
 
         scanner = a.bluetoothLeScanner
         val filter = ScanFilter.Builder().setDeviceName(UranProtocol.DEVICE_NAME).build()
-        val settings = ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
+        val settings =
+            ScanSettings.Builder().setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY).build()
         scanning = true
         setState(LinkStatus.SCANNING, "Scanning for ${UranProtocol.DEVICE_NAME}")
         scanner?.startScan(listOf(filter), settings, scanCallback)
@@ -111,7 +131,12 @@ class BleCommandSender(private val context: Context) : CommandSender {
             if (!scanning) return
             stopScan()
             setState(LinkStatus.CONNECTING, "Connecting...")
-            gatt = result.device.connectGatt(context, false, gattCallback, BluetoothDevice.TRANSPORT_LE)
+            gatt = result.device.connectGatt(
+                context,
+                false,
+                gattCallback,
+                BluetoothDevice.TRANSPORT_LE
+            )
         }
 
         override fun onScanFailed(errorCode: Int) {
@@ -131,7 +156,10 @@ class BleCommandSender(private val context: Context) : CommandSender {
     }
 
     private fun cleanup(g: BluetoothGatt) {
-        try { g.close() } catch (_: Exception) {}
+        try {
+            g.close()
+        } catch (_: Exception) {
+        }
         if (gatt === g) gatt = null
         rxChar = null
         synchronized(lock) {
@@ -193,10 +221,32 @@ class BleCommandSender(private val context: Context) : CommandSender {
             }
         }
 
-        override fun onCharacteristicWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, status: Int) {
-            synchronized(lock) { writing = false }
-            pump()
+        override fun onCharacteristicWrite(
+            g: BluetoothGatt,
+            c: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            if (gatt !== g) return
+
+            val completed = synchronized(lock) {
+                val packet = currentWrite
+                currentWrite = null
+                writing = false
+                packet
+            }
+
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                completed?.let {
+                    _writes.tryEmit(it.trim())
+                }
+
+                pump()
+            } else {
+                _replies.tryEmit("ERR,BLE_WRITE,$status")
+                g.disconnect()
+            }
         }
+
 
         // Android 12 and older
         override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic) {
@@ -204,7 +254,11 @@ class BleCommandSender(private val context: Context) : CommandSender {
         }
 
         // Android 13+
-        override fun onCharacteristicChanged(g: BluetoothGatt, c: BluetoothGattCharacteristic, value: ByteArray) {
+        override fun onCharacteristicChanged(
+            g: BluetoothGatt,
+            c: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
             if (c.uuid == UranProtocol.TX) handleBytes(value)
         }
     }
@@ -225,22 +279,66 @@ class BleCommandSender(private val context: Context) : CommandSender {
     }
 
     // ------------------------------------------------------------ sending
-    override fun sendControl(command: DroneCommand): Boolean {
+    override fun sendControl(
+        command: DroneCommand
+    ): Boolean {
         if (!isReady()) return false
-        synchronized(lock) { pendingControl = UranProtocol.control(command) }
+
+        synchronized(lock) {
+            pendingControl = UranProtocol.control(command)
+        }
+
         pump()
         return true
     }
 
-    override fun sendDisarm(): Boolean = sendSafety(UranProtocol.DISARM)
-    override fun sendEstop(): Boolean = sendSafety(UranProtocol.ESTOP)
+    override fun sendCommand(command: String): Boolean {
+        val packet = UranProtocol.command(command)
+            ?: return false
+
+        // Future commands are intentionally disabled.
+        if (
+            packet == "ARM\n" ||
+            packet == "MOTOR_TEST\n" ||
+            packet == "PREFLIGHT\n"
+        ) {
+            return false
+        }
+
+        if (!isReady()) return false
+
+        synchronized(lock) {
+            if (pendingCommands.size >= maxPendingCommands) {
+                return false
+            }
+
+            pendingCommands.addLast(packet)
+        }
+
+        pump()
+        return true
+    }
+
+    override fun sendDisarm(): Boolean =
+        sendSafety(UranProtocol.DISARM)
+
+    override fun sendEstop(): Boolean =
+        sendSafety(UranProtocol.ESTOP)
 
     private fun sendSafety(text: String): Boolean {
         if (!isReady()) return false
+
         synchronized(lock) {
-            pendingSafety.addFirst(text)   // safety commands go first
-            pendingControl = null          // drop stale control
+            pendingControl = null
+            pendingCommands.clear()
+
+            if (text == UranProtocol.ESTOP) {
+                pendingSafety.addFirst(text)
+            } else {
+                pendingSafety.addLast(text)
+            }
         }
+
         pump()
         return true
     }
@@ -248,33 +346,62 @@ class BleCommandSender(private val context: Context) : CommandSender {
     private fun pump() {
         val g = gatt ?: return
         val c = rxChar ?: return
-        val text: String = synchronized(lock) {
-            val now = System.currentTimeMillis()
-            if (writing && now - writeStartedAt < 1000) return
-            val next = pendingSafety.removeFirstOrNull()
-                ?: pendingControl.also { pendingControl = null }
-                ?: return
+
+        val packet: String = synchronized(lock) {
+            if (writing) return
+
+            val next =
+                pendingSafety.removeFirstOrNull()
+                    ?: pendingCommands.removeFirstOrNull()
+                    ?: pendingControl.also {
+                        pendingControl = null
+                    }
+                    ?: return
+
             writing = true
-            writeStartedAt = now
+            currentWrite = next
+
+            writeStartedAt =
+                android.os.SystemClock.elapsedRealtime()
+
             next
         }
-        if (!doWrite(g, c, text)) {
+
+        if (!doWrite(g, c, packet)) {
             synchronized(lock) {
                 writing = false
-                if (!text.startsWith("C,")) pendingSafety.addFirst(text) // retry safety next time
+                currentWrite = null
             }
+
+            _replies.tryEmit("ERR,BLE_WRITE_START")
+            g.disconnect()
         }
     }
 
-    private fun doWrite(g: BluetoothGatt, c: BluetoothGattCharacteristic, text: String): Boolean {
+    private fun doWrite(
+        g: BluetoothGatt,
+        c: BluetoothGattCharacteristic,
+        text: String
+    ): Boolean {
         if (!hasPermission()) return false
+
         val bytes = text.toByteArray(Charsets.UTF_8)
+
         val type =
-            if ((c.properties and BluetoothGattCharacteristic.PROPERTY_WRITE) != 0)
+            if (
+                (c.properties and
+                        BluetoothGattCharacteristic.PROPERTY_WRITE) != 0
+            ) {
                 BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
-            else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            g.writeCharacteristic(c, bytes, type) == BluetoothStatusCodes.SUCCESS
+            } else {
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            }
+
+        return if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
+        ) {
+            g.writeCharacteristic(c, bytes, type) ==
+                    BluetoothStatusCodes.SUCCESS
         } else {
             c.writeType = type
             c.value = bytes
