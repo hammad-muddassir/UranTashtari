@@ -68,144 +68,92 @@ fun ControlScreen(
     Column(modifier.fillMaxSize()) {
 
         // ===== Pinned: always visible, never scrolls away =====
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
-        ) {
-            ScreenHeader(
-                "Flight mode: $flightMode | throttle locked"
-            ) {
-
-            if (state.stopped) StatusPill("UI LOCKED", Danger)
-                else StatusPill(items[0].value, items[0].health.tint())
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Checkbox(
-                    checked = state.cellsVerified,
-                    onCheckedChange = {
-                        state.cellsVerified = it
-                    }
-                )
-
-                Text(
-                    "3S LiPo cells individually checked safe",
-                    color = Muted,
-                    fontSize = 11.sp
-                )
-            }
-
-            Row(
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Checkbox(
-                    checked = state.benchAreaVerified,
-                    onCheckedChange = {
-                        state.benchAreaVerified = it
-                    }
-                )
-
-                Text(
-                    "Propellers removed and test area clear",
-                    color = Muted,
-                    fontSize = 11.sp
-                )
-            }
-
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Button(
-                    onClick = { state.disarm() },
-                    modifier = Modifier.weight(1f).height(60.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = Warn, contentColor = Color(0xFF1A1200))
-                ) { Text("DISARM", fontSize = 16.sp, fontWeight = FontWeight.Bold) }
-                Button(
-                    onClick = onPrepare,
-                    enabled =
-                        link.status ==
-                                LinkStatus.READY &&
-                                !state.stopped &&
-                                state.cellsVerified &&
-                                state.benchAreaVerified &&
-                                state.preparePhase !=
-                                UranAppState.PreparePhase.PREPARING,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(48.dp),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Text(
-                        "PREPARE DRONE",
-                        fontWeight = FontWeight.Bold
-                    )
-                }
-
-                val prepText =
-                    if (
-                        state.preparePhase ==
-                        UranAppState.PreparePhase.READY &&
-                        !state.canBenchReady()
-                    ) {
-                        "STALE: Repeat preparation"
-                    } else {
-                        "${state.preparePhase}: " +
-                                state.prepareMessage
-                    }
-
-                Text(
-                    prepText,
-                    color = when (
-                        state.preparePhase
-                    ) {
-                        UranAppState.PreparePhase.READY ->
-                            if (state.canBenchReady()) {
-                                Ok
-                            } else {
-                                Warn
-                            }
-
-                        UranAppState.PreparePhase.FAILED ->
-                            Danger
-
-                        else -> Muted
-                    },
-                    fontSize = 11.sp
-                )
-
-                Button(
-                    onClick = {
-                        if (state.stopped) {
-                            state.resetUi()
-                        } else {
-                            state.estop()
-                        }
-                    },
-                    modifier = Modifier.weight(1f).height(60.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (state.stopped) Color(0xFF475569) else Danger,
-                        contentColor = Color.White
-                    )
-                ) {
-                    Text(
-                        if (state.stopped) "RESET UI / RECONNECT" else "E-STOP",
-                        fontSize = if (state.stopped) 13.sp else 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        textAlign = TextAlign.Center
-                    )
-                }
-            }
-            if (state.stopped) {
-                Text(
-                    "E-STOP locked this app. RESET UI does not clear the Flight latch. Only a physical Flight reset does.",
-                    color = Danger, fontSize = 12.sp
-                )
-            }
-            BatteryBanner(state)
+       
+Column(
+    Modifier
+        .fillMaxWidth()
+        .padding(
+            start = 16.dp,
+            end = 16.dp,
+            top = 12.dp,
+            bottom = 8.dp
+        ),
+    verticalArrangement = Arrangement.spacedBy(10.dp)
+) {
+    ScreenHeader(
+        "Flight mode: $flightMode | throttle locked"
+    ) {
+        if (state.stopped) {
+            StatusPill("UI LOCKED", Danger)
+        } else {
+            StatusPill(
+                items[0].value,
+                items[0].health.tint()
+            )
         }
+    }
+
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Button(
+            onClick = { state.disarm() },
+            modifier = Modifier
+                .weight(1f)
+                .height(60.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Warn,
+                contentColor = Color(0xFF1A1200)
+            )
+        ) {
+            Text(
+                "DISARM",
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        Button(
+            onClick = {
+                if (state.stopped) {
+                    state.resetUi()
+                } else {
+                    state.estop()
+                }
+            },
+            modifier = Modifier
+                .weight(1f)
+                .height(60.dp),
+            shape = RoundedCornerShape(16.dp),
+            colors = ButtonDefaults.buttonColors(
+                containerColor =
+                    if (state.stopped) {
+                        Color(0xFF475569)
+                    } else {
+                        Danger
+                    }
+            )
+        ) {
+            Text(
+                if (state.stopped) "RESET UI"
+                else "E-STOP",
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+
+    if (state.stopped) {
+        Text(
+            "E-STOP locked. Physical Flight reset " +
+                "and fresh telemetry required.",
+            color = Danger,
+            fontSize = 12.sp
+        )
+    }
+
+    BatteryBanner(state)
+}
 
         // ===== Scrollable area =====
         Column(
@@ -256,12 +204,103 @@ fun ControlScreen(
                 )
             }
 
+            
+Panel {
+    SectionLabel("BENCH PREPARATION")
+
+    Spacer(Modifier.height(8.dp))
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(
+            checked = state.cellsVerified,
+            onCheckedChange = {
+                state.cellsVerified = it
+            }
+        )
+
+        Text(
+            "3S LiPo cells individually checked safe",
+            color = Muted,
+            fontSize = 11.sp
+        )
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Checkbox(
+            checked = state.benchAreaVerified,
+            onCheckedChange = {
+                state.benchAreaVerified = it
+            }
+        )
+
+        Text(
+            "Propellers removed and area clear",
+            color = Muted,
+            fontSize = 11.sp
+        )
+    }
+
+    Spacer(Modifier.height(8.dp))
+
+    Button(
+        onClick = onPrepare,
+        enabled =
+            link.status == LinkStatus.READY &&
+            !state.stopped &&
+            state.cellsVerified &&
+            state.benchAreaVerified &&
+            state.preparePhase !=
+                UranAppState.PreparePhase.PREPARING,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(48.dp),
+        shape = RoundedCornerShape(12.dp)
+    ) {
+        Text(
+            "PREPARE DRONE",
+            fontWeight = FontWeight.Bold
+        )
+    }
+
+    val prepText =
+        if (
+            state.preparePhase ==
+                UranAppState.PreparePhase.READY &&
+            !state.canBenchReady()
+        ) {
+            "STALE: Repeat preparation"
+        } else {
+            "${state.preparePhase}: ${state.prepareMessage}"
+        }
+
+    Text(
+        prepText,
+        color = when (state.preparePhase) {
+            UranAppState.PreparePhase.READY ->
+                if (state.canBenchReady()) Ok else Warn
+
+            UranAppState.PreparePhase.FAILED ->
+                Danger
+
+            else -> Muted
+        },
+        fontSize = 11.sp
+    )
+}
+
+
             // ---------- Health (real data or UNKNOWN) ----------
             items.chunked(3).forEach { rowItems ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     rowItems.forEach { HealthPill(it.label, it.value, it.health, Modifier.weight(1f)) }
                 }
             }
+
+            
 
             // ---------- Mode: AUTO is not implemented ----------
             Row(
@@ -556,8 +595,7 @@ fun ControlScreen(
             }
 
             Spacer(Modifier.height(8.dp))
-        }
-    }
+       
      Panel {
          SectionLabel(
              "MOTOR TEST - FUTURE FIRMWARE"
