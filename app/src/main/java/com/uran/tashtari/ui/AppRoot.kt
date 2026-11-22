@@ -124,8 +124,8 @@ fun AppRoot(modifier: Modifier = Modifier) {
         if (link.status == LinkStatus.READY) {
             state.resetLinkStats()
         } else {
-            state.neutralAll()
-            state.throttleTransmitted = 0
+            state.resetLiveFlight("DISCONNECTED")
+            state.flightTestSelected = false
 
             state.invalidatePreparation(
                 "BLE link lost; preparation invalid"
@@ -140,6 +140,7 @@ fun AppRoot(modifier: Modifier = Modifier) {
         while (true) {
             state.now =
                 SystemClock.elapsedRealtime()
+            state.checkFlightStatus(state.now)
 
             if (
                 state.preparePhase ==
@@ -179,7 +180,8 @@ fun AppRoot(modifier: Modifier = Modifier) {
                 roll = state.roll,
                 pitch = state.pitch,
                 yaw = state.yaw,
-                throttle = state.throttleSelected
+                throttle = if (state.flightArmed) state.throttleSelected else 0,
+                flightMode = state.flightTestSelected && tab == 0
             )
 
             val accepted =
@@ -203,13 +205,7 @@ fun AppRoot(modifier: Modifier = Modifier) {
                 lastLogged = axes
             }
 
-            delay(100)
-        }
-    }
-
-    LaunchedEffect(tab) {
-        if (tab != 0) {
-            state.neutralAll()
+            delay(if (state.flightTestSelected) 50L else 100L)
         }
     }
 
@@ -221,7 +217,12 @@ fun AppRoot(modifier: Modifier = Modifier) {
                 _, event ->
 
             if (event == Lifecycle.Event.ON_PAUSE) {
-                state.neutralAll()
+                if (state.flightTestSelected) {
+                    state.disarm()
+                    state.flightTestSelected = false
+                } else {
+                    state.neutralAll()
+                }
                 state.invalidatePreparation(
                     "App left foreground"
                 )
@@ -269,6 +270,14 @@ fun AppRoot(modifier: Modifier = Modifier) {
         }
 
         BottomTabs(tab) {
+            if (it != 0) {
+                if (state.flightTestSelected) {
+                    state.disarm()
+                    state.flightTestSelected = false
+                } else {
+                    state.neutralAll()
+                }
+            }
             tab = it
         }
     }
