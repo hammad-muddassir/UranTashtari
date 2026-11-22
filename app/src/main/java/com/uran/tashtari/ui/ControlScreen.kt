@@ -16,6 +16,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uran.tashtari.network.LinkStatus
@@ -186,6 +187,8 @@ Column(
                         Text(link.message, color = Color.White, fontSize = 13.sp)
                         Text(
                             "Last reply: ${state.lastReply}",
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                             color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace
                         )
                     }
@@ -214,6 +217,65 @@ Column(
                 Text(
                     "Device: ${UranProtocol.DEVICE_NAME}",
                     color = DisabledGrey, fontSize = 10.sp
+                )
+            }
+
+            // ---------- Joysticks ----------
+            Panel {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    SectionLabel("FLIGHT STICKS")
+                    Text(
+                        if (manualEnabled) "LIVE" else "LOCKED",
+                        color = if (manualEnabled) Ok else Muted,
+                        fontSize = 12.sp, fontWeight = FontWeight.Bold
+                    )
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+
+                    // Left: throttle (up) + yaw (left/right)
+                    StickBlock(
+                        title = "THROTTLE / YAW",
+                        readout = "THR %3d%%\nYAW %+3d".format(state.throttleSelected, state.yaw),
+                        enabled = manualEnabled,
+                        modifier = Modifier.weight(1f),
+                        onChange = { x, y ->
+                            state.yaw = (x * AXIS_MAX).roundToInt()
+                            // Up only: pushing down stays at 0, throttle is never negative.
+                            // UI only. This value is never put into a BLE packet.
+                            state.throttleSelected = (max(0f, y) * 100f).roundToInt()
+                        },
+                        onRelease = {
+                            state.yaw = 0
+                            state.throttleSelected = 0
+                        }
+                    )
+
+                    // Right: pitch (up/down) + roll (left/right)
+                    StickBlock(
+                        title = "PITCH / ROLL",
+                        readout = "PITCH %+3d\nROLL  %+3d".format(state.pitch, state.roll),
+                        enabled = manualEnabled,
+                        modifier = Modifier.weight(1f),
+                        onChange = { x, y ->
+                            state.roll = (x * AXIS_MAX).roundToInt()
+                            state.pitch = (y * AXIS_MAX).roundToInt()
+                        },
+                        onRelease = {
+                            state.roll = 0
+                            state.pitch = 0
+                        }
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Roll, pitch and yaw return to 0 on release. Throttle is shown on screen only and is NOT transmitted. " +
+                            "Directions (right = roll +, up = pitch +, right = yaw +) are placeholders until Usman confirms the sign convention.",
+                    color = DisabledGrey, fontSize = 11.sp
                 )
             }
 
@@ -522,65 +584,6 @@ Panel {
                 }
             }
 
-            // ---------- Joysticks ----------
-            Panel {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    SectionLabel("FLIGHT STICKS")
-                    Text(
-                        if (manualEnabled) "LIVE" else "LOCKED",
-                        color = if (manualEnabled) Ok else Muted,
-                        fontSize = 12.sp, fontWeight = FontWeight.Bold
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-
-                    // Left: throttle (up) + yaw (left/right)
-                    StickBlock(
-                        title = "THROTTLE / YAW",
-                        readout = "THR %3d%%\nYAW %+3d".format(state.throttleSelected, state.yaw),
-                        enabled = manualEnabled,
-                        modifier = Modifier.weight(1f),
-                        onChange = { x, y ->
-                            state.yaw = (x * AXIS_MAX).roundToInt()
-                            // Up only: pushing down stays at 0, throttle is never negative.
-                            // UI only. This value is never put into a BLE packet.
-                            state.throttleSelected = (max(0f, y) * 100f).roundToInt()
-                        },
-                        onRelease = {
-                            state.yaw = 0
-                            state.throttleSelected = 0
-                        }
-                    )
-
-                    // Right: pitch (up/down) + roll (left/right)
-                    StickBlock(
-                        title = "PITCH / ROLL",
-                        readout = "PITCH %+3d\nROLL  %+3d".format(state.pitch, state.roll),
-                        enabled = manualEnabled,
-                        modifier = Modifier.weight(1f),
-                        onChange = { x, y ->
-                            state.roll = (x * AXIS_MAX).roundToInt()
-                            state.pitch = (y * AXIS_MAX).roundToInt()
-                        },
-                        onRelease = {
-                            state.roll = 0
-                            state.pitch = 0
-                        }
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Roll, pitch and yaw return to 0 on release. Throttle is shown on screen only and is NOT transmitted. " +
-                            "Directions (right = roll +, up = pitch +, right = yaw +) are placeholders until Usman confirms the sign convention.",
-                    color = DisabledGrey, fontSize = 11.sp
-                )
-            }
-
             // ---------- Throttle: four separate meanings, never mixed ----------
             Panel {
                 SectionLabel("THROTTLE STATE")
@@ -686,16 +689,6 @@ private fun FlightTestControls(state: UranAppState, modifier: Modifier = Modifie
             Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Text(
-                when (state.liveStatus) {
-                    "CFG" -> "Verify the aircraft configuration on the FLIGHT ESP32."
-                    "READY" -> "Keep throttle at zero and release both sticks before arming."
-                    "ARMED" -> "Throttle holds its selected value when you lift your finger."
-                    "FAULT" -> "Flight stopped. Check the connection, key and attitude."
-                    else -> "Level the frame, then cycle the physical key off and on."
-                },
-                color = Muted
-            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     enabled = connected && !state.stopped && !armed && !state.flightArmPending,
@@ -708,13 +701,6 @@ private fun FlightTestControls(state: UranAppState, modifier: Modifier = Modifie
                 ) { Text("ARM FLIGHT") }
             }
 
-            Text("Throttle ${state.throttleSelected}%  |  BLE written ${state.throttleTransmitted}%")
-            Slider(
-                value = state.throttleSelected.toFloat(),
-                onValueChange = { state.throttleSelected = it.roundToInt() },
-                valueRange = 0f..100f,
-                enabled = armed
-            )
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                 StickBlock(
                     title = "YAW",
@@ -739,6 +725,23 @@ private fun FlightTestControls(state: UranAppState, modifier: Modifier = Modifie
                     }
                 )
             }
+            Text("Throttle ${state.throttleSelected}%  |  BLE written ${state.throttleTransmitted}%")
+            Slider(
+                value = state.throttleSelected.toFloat(),
+                onValueChange = { state.throttleSelected = it.roundToInt() },
+                valueRange = 0f..100f,
+                enabled = armed
+            )
+            Text(
+                when (state.liveStatus) {
+                    "CFG" -> "Verify the aircraft configuration on the FLIGHT ESP32."
+                    "READY" -> "Keep throttle at zero and release both sticks before arming."
+                    "ARMED" -> "Throttle holds its selected value when you lift your finger."
+                    "FAULT" -> "Flight stopped. Check the connection, key and attitude."
+                    else -> "Level the frame, then cycle the physical key off and on."
+                },
+                color = Muted
+            )
             TextButton(
                 onClick = {
                     state.disarm()
