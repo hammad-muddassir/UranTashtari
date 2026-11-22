@@ -40,6 +40,16 @@ class UranAppState(
     var throttleSelected by mutableIntStateOf(0)
     var throttleTransmitted by mutableIntStateOf(0)
 
+    var flightTestSelected by mutableStateOf(false)
+    var flightArmed by mutableStateOf(false)
+        private set
+    var flightArmPending by mutableStateOf(false)
+        private set
+    var liveStatus by mutableStateOf("WAITING")
+        private set
+    private var lastLiveStatusAt = 0L
+    private var armRequestedAt = 0L
+
     var stopped by mutableStateOf(false)
     var estopSent by mutableStateOf(false)
 
@@ -204,11 +214,65 @@ class UranAppState(
         rcSentAt.fill(0L)
     }
 
-    fun handleReply(line: String) {
-        recordWire("RX", line)
+    fun armFlight() {
+        val time = SystemClock.elapsedRealtime()
+        if (!flightTestSelected || stopped || flightArmed || flightArmPending ||
+            liveStatus != "READY" || time - lastLiveStatusAt >= 750L ||
+            throttleSelected != 0 || roll != 0 || pitch != 0 || yaw != 0) return
 
-        val time =
-            SystemClock.elapsedRealtime()
+        flightArmPending = true
+        armRequestedAt = time
+        if (!sender.sendCommand("FLIGHT_ARM")) {
+            resetLiveFlight("ARM COMMAND FAILED")
+        }
+    }
+
+    fun resetLiveFlight(status: String) {
+        flightArmPending = false
+        flightArmed = false
+        liveStatus = status
+        throttleTransmitted = 0
+        neutralAll()
+    }
+
+    fun checkFlightStatus(time: Long) {
+        if ((flightArmed && time - lastLiveStatusAt >= 750L) ||
+            (flightArmPending && time - armRequestedAt >= 1000L)) {
+            disarm()
+            resetLiveFlight("FLIGHT LINK STALE")
+        }
+    }
+
+    fun handleReply(line: String) {
+        val time = SystemClock.elapsedRealtime()
+        if (line.startsWith("FS,")) {
+            val status = line.substringAfter(',')
+            if (status != "ARMED" && status != "READY" &&
+                status != "SAFE" && status != "CFG" && status != "FAULT") return
+
+            if (liveStatus != status) recordWire("RX", line)
+            lastLiveStatusAt = time
+            when (status) {
+                "ARMED" -> {
+                    if (flightTestSelected && !stopped && (flightArmPending || flightArmed)) {
+                        flightArmed = true
+                        flightArmPending = false
+                        liveStatus = status
+                    } else {
+                        sender.sendDisarm()
+                    }
+                }
+                "FAULT", "CFG" -> resetLiveFlight(status)
+                else -> if (flightArmed) resetLiveFlight(status) else liveStatus = status
+            }
+            return
+        }
+
+        recordWire("RX", line)
+        if (line == "ERR,FLIGHT_ARM" || line == "ACK,DISARMED" ||
+            line == "ACK,ESTOP" || line == "ERR,MPU_FAULT") {
+            resetLiveFlight(if (line == "ERR,FLIGHT_ARM") "ARM REJECTED" else "SAFE")
+        }
 
         val previousLevel = battery.level
 
@@ -334,7 +398,7 @@ class UranAppState(
     }
 
     fun disarm() {
-        neutralAll()
+        resetLiveFlight("DISARM REQUESTED")
 
         prepareToken++
         preparePhase = PreparePhase.IDLE
@@ -354,7 +418,7 @@ class UranAppState(
     }
 
     fun estop() {
-        neutralAll()
+        resetLiveFlight("E-STOP REQUESTED")
 
         prepareToken++
         preparePhase = PreparePhase.FAILED
