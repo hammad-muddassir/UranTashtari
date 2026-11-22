@@ -160,12 +160,29 @@ class BleCommandSender(private val context: Context) : CommandSender {
             g.close()
         } catch (_: Exception) {
         }
-        if (gatt === g) gatt = null
+        if (gatt !== g) return
+        gatt = null
         rxChar = null
+        synchronized(rxBuffer) { rxBuffer.clear() }
         synchronized(lock) {
             writing = false
+            currentWrite = null
             pendingControl = null
             pendingSafety.clear()
+            pendingCommands.clear()
+        }
+    }
+
+    private fun waitForPairing(g: BluetoothGatt, deadline: Long) {
+        if (gatt !== g || _state.value.status != LinkStatus.CONNECTING) return
+        when {
+            g.device.bondState == BluetoothDevice.BOND_BONDED ->
+                setState(LinkStatus.READY, "Paired to ${UranProtocol.DEVICE_NAME}")
+            android.os.SystemClock.elapsedRealtime() >= deadline -> {
+                setState(LinkStatus.IDLE, "Pairing timed out; reconnect")
+                g.disconnect()
+            }
+            else -> main.postDelayed({ waitForPairing(g, deadline) }, 250)
         }
     }
 
@@ -212,9 +229,10 @@ class BleCommandSender(private val context: Context) : CommandSender {
         }
 
         override fun onDescriptorWrite(g: BluetoothGatt, d: BluetoothGattDescriptor, status: Int) {
-            if (d.uuid != cccdUuid) return
+            if (gatt !== g || d.uuid != cccdUuid) return
             if (status == BluetoothGatt.GATT_SUCCESS) {
-                setState(LinkStatus.READY, "Connected to ${UranProtocol.DEVICE_NAME}")
+                setState(LinkStatus.CONNECTING, "Pair using the passkey shown on COMM USB")
+                waitForPairing(g, android.os.SystemClock.elapsedRealtime() + 60_000)
             } else {
                 setState(LinkStatus.IDLE, "Could not enable notifications")
                 g.disconnect()
@@ -296,14 +314,7 @@ class BleCommandSender(private val context: Context) : CommandSender {
         val packet = UranProtocol.command(command)
             ?: return false
 
-        // Future commands are intentionally disabled.
-        if (
-            packet == "ARM\n" ||
-            packet == "MOTOR_TEST\n" ||
-            packet == "PREFLIGHT\n"
-        ) {
-            return false
-        }
+        if (packet == "MOTOR_TEST\n" || packet == "PREFLIGHT\n") return false
 
         if (!isReady()) return false
 
