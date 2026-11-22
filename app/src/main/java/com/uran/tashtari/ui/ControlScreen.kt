@@ -43,6 +43,11 @@ fun ControlScreen(
     modifier: Modifier = Modifier
 )
  {
+     if (state.flightTestSelected) {
+         FlightTestControls(state, modifier)
+         return
+     }
+
      val context = LocalContext.current
 
      var terminalExpanded by remember {
@@ -80,6 +85,14 @@ Column(
         ),
     verticalArrangement = Arrangement.spacedBy(10.dp)
 ) {
+    TextButton(
+        enabled = manualEnabled,
+        onClick = {
+            state.disarm()
+            state.flightTestSelected = true
+        }
+    ) { Text("MANUAL FLIGHT TEST") }
+
     ScreenHeader(
         "Flight mode: $flightMode | throttle locked"
     ) {
@@ -642,6 +655,99 @@ Panel {
    }         // closes Column(modifier.fillMaxSize())
 }            // closes fun ControlScreen
 
+
+@Composable
+private fun FlightTestControls(state: UranAppState, modifier: Modifier = Modifier) {
+    val link by state.sender.state.collectAsState()
+    val connected = link.status == LinkStatus.READY
+    val armed = state.flightArmed && connected && !state.stopped
+
+    Column(modifier.fillMaxSize().padding(16.dp)) {
+        ScreenHeader("Manual flight test") {
+            StatusPill(
+                if (state.flightArmPending) "ARMING" else state.liveStatus,
+                if (armed) Warn else Muted
+            )
+        }
+
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                onClick = { state.disarm() },
+                modifier = Modifier.weight(1f)
+            ) { Text("DISARM") }
+            Button(
+                onClick = { state.estop() },
+                colors = ButtonDefaults.buttonColors(containerColor = Danger),
+                modifier = Modifier.weight(1f)
+            ) { Text("E-STOP") }
+        }
+
+        Column(
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Text(
+                when (state.liveStatus) {
+                    "CFG" -> "Verify the aircraft configuration on the FLIGHT ESP32."
+                    "READY" -> "Keep throttle at zero and release both sticks before arming."
+                    "ARMED" -> "Throttle holds its selected value when you lift your finger."
+                    "FAULT" -> "Flight stopped. Check the connection, key and attitude."
+                    else -> "Level the frame, then cycle the physical key off and on."
+                },
+                color = Muted
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    enabled = connected && !state.stopped && !armed && !state.flightArmPending,
+                    onClick = { state.sender.sendCommand("LEVEL") }
+                ) { Text("CALIBRATE LEVEL") }
+                Button(
+                    enabled = connected && !state.stopped && !armed && !state.flightArmPending &&
+                        state.liveStatus == "READY",
+                    onClick = { state.armFlight() }
+                ) { Text("ARM FLIGHT") }
+            }
+
+            Text("Throttle ${state.throttleSelected}%  |  BLE written ${state.throttleTransmitted}%")
+            Slider(
+                value = state.throttleSelected.toFloat(),
+                onValueChange = { state.throttleSelected = it.roundToInt() },
+                valueRange = 0f..100f,
+                enabled = armed
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                StickBlock(
+                    title = "YAW",
+                    readout = "%+d".format(state.yaw),
+                    enabled = armed,
+                    modifier = Modifier.weight(1f),
+                    onChange = { x, _ -> state.yaw = (x * AXIS_MAX).roundToInt() },
+                    onRelease = { state.yaw = 0 }
+                )
+                StickBlock(
+                    title = "PITCH / ROLL",
+                    readout = "%+d / %+d".format(state.pitch, state.roll),
+                    enabled = armed,
+                    modifier = Modifier.weight(1f),
+                    onChange = { x, y ->
+                        state.roll = (x * AXIS_MAX).roundToInt()
+                        state.pitch = (y * AXIS_MAX).roundToInt()
+                    },
+                    onRelease = {
+                        state.roll = 0
+                        state.pitch = 0
+                    }
+                )
+            }
+            TextButton(
+                onClick = {
+                    state.disarm()
+                    state.flightTestSelected = false
+                }
+            ) { Text("EXIT FLIGHT TEST") }
+        }
+    }
+}
 
 @Composable
 private fun StickBlock(
