@@ -175,15 +175,17 @@ fun HoldButton(
 }
 
 @Composable
-fun BottomTabs(selected: Int, onSelect: (Int) -> Unit) {
-    val labels = listOf("CONTROL", "CAMERA", "DIAGNOSTICS")
+fun BottomTabs(selected: Int, navigationEnabled: Boolean, onSelect: (Int) -> Unit) {
+    val labels = listOf("FLIGHT", "CAMERA", "DIAGNOSTICS")
     Column(Modifier.fillMaxWidth().background(PanelColor)) {
         Box(Modifier.fillMaxWidth().height(1.dp).background(LineColor))
         Row(Modifier.fillMaxWidth()) {
             labels.forEachIndexed { i, label ->
                 val sel = i == selected
                 Column(
-                    Modifier.weight(1f).clickable { onSelect(i) }.padding(vertical = 12.dp),
+                    Modifier.weight(1f)
+                        .clickable(enabled = navigationEnabled && !sel) { onSelect(i) }
+                        .padding(vertical = 12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     Box(
@@ -195,7 +197,11 @@ fun BottomTabs(selected: Int, onSelect: (Int) -> Unit) {
                     Spacer(Modifier.height(6.dp))
                     Text(
                         label, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                        color = if (sel) MaterialTheme.colorScheme.primary else Muted
+                        color = when {
+                            sel -> MaterialTheme.colorScheme.primary
+                            navigationEnabled -> Muted
+                            else -> DisabledGrey
+                        }
                     )
                 }
             }
