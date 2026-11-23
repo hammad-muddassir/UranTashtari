@@ -16,232 +16,142 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-
 import com.uran.tashtari.model.DroneCommand
 import com.uran.tashtari.network.BleCommandSender
 import com.uran.tashtari.network.LinkStatus
 import com.uran.tashtari.network.UranProtocol
-
-import kotlinx.coroutines.CoroutineStart
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
+
+private const val FLIGHT_TAB = 0
+private const val CAMERA_TAB = 1
 
 @Composable
 fun AppRoot(modifier: Modifier = Modifier) {
     val context = LocalContext.current
-
-    val state = remember {
-        UranAppState(
-            BleCommandSender(
-                context.applicationContext
-            )
-        )
-    }
-
+    val activity = context as ComponentActivity
+    val state = remember { UranAppState(BleCommandSender(context.applicationContext)) }
     val sender = state.sender
     val link by sender.state.collectAsState()
 
-    val scope = rememberCoroutineScope()
-
-    var tab by remember {
-        mutableIntStateOf(0)
+    var tab by remember { mutableIntStateOf(FLIGHT_TAB) }
+    var foreground by remember(activity) {
+        mutableStateOf(activity.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED))
     }
 
-    val permissionLauncher =
-        rememberLauncherForActivityResult(
-            ActivityResultContracts
-                .RequestMultiplePermissions()
-        ) { result ->
-
-            if (result.values.all { it }) {
-                sender.connect()
-            } else {
-                state.addLog(
-                    "ERR",
-                    "Bluetooth permission denied"
-                )
-            }
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        if (result.isNotEmpty() && result.values.all { it }) {
+            sender.connect()
+        } else {
+            state.addLog("ERR", "Bluetooth permission denied")
         }
+    }
 
     fun connectWithPermission() {
-        val needed =
-            if (
-                Build.VERSION.SDK_INT >=
-                Build.VERSION_CODES.S
-            ) {
-                arrayOf(
-                    Manifest.permission
-                        .BLUETOOTH_SCAN,
-                    Manifest.permission
-                        .BLUETOOTH_CONNECT
-                )
-            } else {
-                arrayOf(
-                    Manifest.permission
-                        .ACCESS_FINE_LOCATION
-                )
-            }
-
-        val missing = needed.filter {
-            ContextCompat.checkSelfPermission(
-                context,
-                it
-            ) !=
-                    PackageManager.PERMISSION_GRANTED
+        val needed = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+        } else {
+            arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
-
+        val missing = needed.filter {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        }
         if (missing.isEmpty()) {
             sender.connect()
         } else {
-            permissionLauncher.launch(
-                missing.toTypedArray()
-            )
+            permissionLauncher.launch(missing.toTypedArray())
+        }
+    }
+
+    fun leaveManualFlight() {
+        if (state.flightTestSelected) {
+            state.disarm()
+            state.flightTestSelected = false
+        } else {
+            state.neutralAll()
         }
     }
 
     LaunchedEffect(sender) {
-        sender.replies.collect {
-            state.handleReply(it)
-        }
+        sender.replies.collect { state.handleReply(it) }
     }
 
     LaunchedEffect(sender) {
-        sender.writes.collect {
-            state.noteBleWrite(it)
-        }
+        sender.writes.collect { state.noteBleWrite(it) }
     }
 
     LaunchedEffect(link) {
-        state.addLog(
-            "BLE",
-            link.message
-        )
-
+        state.addLog("BLE", link.message)
         if (link.status == LinkStatus.READY) {
             state.resetLinkStats()
         } else {
-            state.resetLiveFlight("DISCONNECTED")
             state.flightTestSelected = false
+            state.resetLiveFlight("DISCONNECTED")
+        }
+    }
 
-            state.invalidatePreparation(
-                "BLE link lost; preparation invalid"
-            )
-
-            state.cellsVerified = false
-            state.benchAreaVerified = false
+    LaunchedEffect(link.status, tab, foreground) {
+        if (link.status == LinkStatus.READY && tab == FLIGHT_TAB && foreground &&
+            !state.flightTestSelected
+        ) {
+            // Enter manual mode with neutral inputs and an explicit disarm.
+            state.disarm()
+            state.flightTestSelected = true
         }
     }
 
     LaunchedEffect(Unit) {
         while (true) {
-            state.now =
-                SystemClock.elapsedRealtime()
+            state.now = SystemClock.elapsedRealtime()
             state.checkFlightStatus(state.now)
-
-            if (
-                state.preparePhase ==
-                UranAppState.PreparePhase.READY &&
-                !state.canBenchReady()
-            ) {
-                state.invalidatePreparation(
-                    "Readiness expired or check failed"
-                )
-            }
-
             delay(250)
         }
     }
 
-    val manualEnabled =
-        link.status == LinkStatus.READY &&
-                !state.stopped &&
-                state.preparePhase !=
-                UranAppState.PreparePhase.PREPARING
-
-    LaunchedEffect(manualEnabled) {
-        if (!manualEnabled) {
-            return@LaunchedEffect
-        }
+    val linkReady = link.status == LinkStatus.READY && !state.stopped
+    LaunchedEffect(linkReady) {
+        if (!linkReady) return@LaunchedEffect
 
         var seq = 0
-
-        var lastLogged =
-            Triple(Int.MIN_VALUE, 0, 0)
+        var lastLogged = Triple(Int.MIN_VALUE, 0, 0)
 
         while (true) {
             seq = (seq + 1) and 0xFF
-
+            val manual = state.flightTestSelected && tab == FLIGHT_TAB && foreground
             val cmd = DroneCommand(
                 seq = seq,
-                roll = state.roll,
-                pitch = state.pitch,
-                yaw = state.yaw,
-                throttle = if (state.flightArmed) state.throttleSelected else 0,
-                flightMode = state.flightTestSelected && tab == 0
+                roll = if (manual) state.roll else 0,
+                pitch = if (manual) state.pitch else 0,
+                yaw = if (manual) state.yaw else 0,
+                throttle = if (manual && state.flightArmed) state.throttleSelected else 0,
+                flightMode = manual
             )
-
-            val accepted =
-                sender.sendControl(cmd)
-
-            val axes = Triple(
-                state.roll,
-                state.pitch,
-                state.yaw
-            )
-
-            if (
-                accepted &&
-                axes != lastLogged
-            ) {
-                state.addLog(
-                    "QUEUE",
-                    UranProtocol.control(cmd).trim()
-                )
-
+            val accepted = sender.sendControl(cmd)
+            val axes = Triple(cmd.roll, cmd.pitch, cmd.yaw)
+            if (accepted && axes != lastLogged) {
+                state.addLog("QUEUE", UranProtocol.control(cmd).trim())
                 lastLogged = axes
             }
-
-            delay(if (state.flightTestSelected) 50L else 100L)
+            delay(if (manual) 50L else 100L)
         }
     }
 
-    DisposableEffect(context) {
-        val activity =
-            context as ComponentActivity
-
-        val observer = LifecycleEventObserver {
-                _, event ->
-
-            if (event == Lifecycle.Event.ON_PAUSE) {
-                if (state.flightTestSelected) {
-                    state.disarm()
-                    state.flightTestSelected = false
-                } else {
-                    state.neutralAll()
+    DisposableEffect(activity) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> foreground = true
+                Lifecycle.Event.ON_PAUSE -> {
+                    foreground = false
+                    leaveManualFlight()
                 }
-                state.invalidatePreparation(
-                    "App left foreground"
-                )
-            }
-
-            if (event == Lifecycle.Event.ON_STOP) {
-                sender.disconnect()
+                Lifecycle.Event.ON_STOP -> sender.disconnect()
+                else -> Unit
             }
         }
-
-        activity.lifecycle.addObserver(
-            observer
-        )
-
+        activity.lifecycle.addObserver(observer)
         onDispose {
-            activity.lifecycle.removeObserver(
-                observer
-            )
-
+            activity.lifecycle.removeObserver(observer)
             sender.disconnect()
         }
     }
@@ -249,277 +159,18 @@ fun AppRoot(modifier: Modifier = Modifier) {
     Column(modifier.fillMaxSize()) {
         Box(Modifier.weight(1f)) {
             when (tab) {
-                0 -> ControlScreen(
+                FLIGHT_TAB -> ControlScreen(
                     state = state,
-                    onConnect = {
-                        connectWithPermission()
-                    },
-                    onPrepare = {
-                        scope.launch {
-                            runPrepare(state)
-                        }
-                    }
+                    onConnect = { connectWithPermission() }
                 )
-
-                1 -> CameraScreen()
-
-                else -> DiagnosticsScreen(
-                    state
-                )
+                CAMERA_TAB -> CameraScreen()
+                else -> DiagnosticsScreen(state)
             }
         }
-
-        BottomTabs(tab) {
-            if (it != 0) {
-                if (state.flightTestSelected) {
-                    state.disarm()
-                    state.flightTestSelected = false
-                } else {
-                    state.neutralAll()
-                }
-            }
+        BottomTabs(tab, navigationEnabled = !state.flightArmed && !state.flightArmPending) {
+            if (state.flightArmed || state.flightArmPending) return@BottomTabs
+            if (it != FLIGHT_TAB) leaveManualFlight()
             tab = it
         }
     }
-}
-
-private suspend fun runPrepare(
-    state: UranAppState
-) = coroutineScope {
-
-    val sender = state.sender
-
-    if (
-        sender.state.value.status !=
-        LinkStatus.READY ||
-        state.stopped
-    ) {
-        state.preparePhase =
-            UranAppState.PreparePhase.FAILED
-
-        state.prepareMessage =
-            "BLE disconnected or E-STOP locked"
-
-        return@coroutineScope
-    }
-
-    if (
-        state.preparePhase ==
-        UranAppState.PreparePhase.PREPARING
-    ) {
-        return@coroutineScope
-    }
-
-    if (
-        !state.cellsVerified ||
-        !state.benchAreaVerified
-    ) {
-        state.preparePhase =
-            UranAppState.PreparePhase.FAILED
-
-        state.prepareMessage =
-            "Complete physical safety confirmations"
-
-        return@coroutineScope
-    }
-
-    val token = ++state.prepareToken
-
-    state.neutralAll()
-
-    state.preparePhase =
-        UranAppState.PreparePhase.PREPARING
-
-    state.prepareMessage =
-        "Starting bench checks"
-
-    fun fail(reason: String) {
-        state.preparePhase =
-            UranAppState.PreparePhase.FAILED
-
-        state.prepareMessage = reason
-
-        state.addLog(
-            "ERR",
-            "PREPARE: $reason"
-        )
-    }
-
-    suspend fun commandStep(
-        name: String,
-        send: () -> Boolean,
-        accepted: (String) -> Boolean
-    ): Boolean {
-
-        if (
-            token != state.prepareToken ||
-            state.stopped ||
-            sender.state.value.status !=
-            LinkStatus.READY
-        ) {
-            fail("$name cancelled")
-            return false
-        }
-
-        state.prepareMessage =
-            "Waiting for $name"
-
-        // Subscribe before sending command.
-        val response = async(
-            start = CoroutineStart.UNDISPATCHED
-        ) {
-            withTimeoutOrNull(4500L) {
-                sender.replies.first { line ->
-                    line.startsWith("ERR") ||
-                            accepted(line)
-                }
-            }
-        }
-
-        if (!send()) {
-            response.cancel()
-            fail(
-                "$name could not be queued"
-            )
-            return false
-        }
-
-        val line = response.await()
-
-        if (
-            token != state.prepareToken ||
-            state.stopped ||
-            sender.state.value.status !=
-            LinkStatus.READY
-        ) {
-            fail("$name cancelled")
-            return false
-        }
-
-        if (line == null) {
-            fail(
-                "$name timed out: no Flight ACK"
-            )
-            return false
-        }
-
-        if (line.startsWith("ERR")) {
-            fail(
-                "$name rejected: $line"
-            )
-            return false
-        }
-
-        state.addLog(
-            "PREP",
-            "$name confirmed: $line"
-        )
-
-        return true
-    }
-
-    if (
-        !commandStep(
-            "DISARM",
-            send = {
-                sender.sendDisarm()
-            },
-            accepted = {
-                it == "ACK,DISARMED"
-            }
-        )
-    ) {
-        return@coroutineScope
-    }
-
-    if (
-        !commandStep(
-            "SIM_OFF",
-            send = {
-                sender.sendCommand(
-                    "SIM_OFF"
-                )
-            },
-            accepted = {
-                it == "ACK,SIM_OFF" ||
-                        it == "ACK,SIMULATION_OFF"
-            }
-        )
-    ) {
-        return@coroutineScope
-    }
-
-    if (
-        !commandStep(
-            "LEVEL",
-            send = {
-                sender.sendCommand(
-                    "LEVEL"
-                )
-            },
-            accepted = {
-                it == "ACK,LEVEL" ||
-                        it == "ACK,LEVEL_OK" ||
-                        it == "ACK,LEVEL_CALIBRATED"
-            }
-        )
-    ) {
-        return@coroutineScope
-    }
-
-    val statusRequestedAt =
-        SystemClock.elapsedRealtime()
-
-    if (
-        !commandStep(
-            "STATUS",
-            send = {
-                sender.sendCommand(
-                    "STATUS"
-                )
-            },
-            accepted = {
-                it.startsWith(
-                    "STATE,MPU="
-                )
-            }
-        )
-    ) {
-        return@coroutineScope
-    }
-
-    delay(100)
-
-    if (
-        token != state.prepareToken ||
-        state.stopped
-    ) {
-        fail(
-            "Preparation interrupted"
-        )
-        return@coroutineScope
-    }
-
-    if (
-        state.flight.lastStateMs <
-        statusRequestedAt ||
-        !state.canBenchReady()
-    ) {
-        fail(
-            "Fresh checks incomplete: verify " +
-                    "MPU, key, battery, LEVEL, mode and link"
-        )
-        return@coroutineScope
-    }
-
-    state.preparePhase =
-        UranAppState.PreparePhase.READY
-
-    state.prepareMessage =
-        "BENCH PREPARED — NOT FLIGHT READY"
-
-    state.addLog(
-        "PREP",
-        "Bench checks passed; motors not armed"
-    )
 }
