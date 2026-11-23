@@ -26,13 +26,6 @@ fun LogEntry.format(): String = "${timeFormat.format(Date(timeMs))} [$tag] $text
 class UranAppState(
     val sender: CommandSender
 ) {
-    enum class PreparePhase {
-        IDLE,
-        PREPARING,
-        READY,
-        FAILED
-    }
-
     var roll by mutableIntStateOf(0)
     var pitch by mutableIntStateOf(0)
     var yaw by mutableIntStateOf(0)
@@ -55,20 +48,6 @@ class UranAppState(
 
     private var estopRequestedAtMs = 0L
     private var estopObservedLatched = false
-
-    // Manual, non-electronic safety checks.
-    var cellsVerified by mutableStateOf(false)
-    var benchAreaVerified by mutableStateOf(false)
-
-    var preparePhase by mutableStateOf(
-        PreparePhase.IDLE
-    )
-
-    var prepareMessage by mutableStateOf(
-        "Preparation not started"
-    )
-
-    var prepareToken by mutableIntStateOf(0)
 
     var lastReply by mutableStateOf("-")
 
@@ -326,12 +305,6 @@ class UranAppState(
                 stopped = true
                 estopSent = true
                 estopObservedLatched = true
-
-                prepareToken++
-                preparePhase =
-                    PreparePhase.FAILED
-                prepareMessage =
-                    "Flight E-STOP is latched"
             }
 
             flight.takeEvents().forEach {
@@ -400,11 +373,6 @@ class UranAppState(
     fun disarm() {
         resetLiveFlight("DISARM REQUESTED")
 
-        prepareToken++
-        preparePhase = PreparePhase.IDLE
-        prepareMessage =
-            "Preparation cancelled by DISARM"
-
         val sent = sender.sendDisarm()
 
         addLog(
@@ -419,11 +387,6 @@ class UranAppState(
 
     fun estop() {
         resetLiveFlight("E-STOP REQUESTED")
-
-        prepareToken++
-        preparePhase = PreparePhase.FAILED
-        prepareMessage =
-            "Preparation cancelled by E-STOP"
 
         stopped = true
         estopSent = true
@@ -473,10 +436,6 @@ class UranAppState(
         estopSent = false
         estopObservedLatched = false
 
-        preparePhase = PreparePhase.IDLE
-        prepareMessage =
-            "Reset confirmed by Flight"
-
         addLog(
             "UI",
             "UI unlocked after Flight confirmation"
@@ -485,43 +444,6 @@ class UranAppState(
         return true
     }
 
-    fun canBenchReady(): Boolean {
-        val time =
-            SystemClock.elapsedRealtime()
-
-        return (
-                sender.state.value.status ==
-                        LinkStatus.READY &&
-                        !stopped &&
-                        cellsVerified &&
-                        benchAreaVerified &&
-                        flight.stateFresh(time) &&
-                        flight.legacyFresh(time) &&
-                        flight.flightMode == "BENCH_ONLY" &&
-                        flight.mpuOk == true &&
-                        flight.calibrated == true &&
-                        flight.flightLink == true &&
-                        flight.estopLatched == false &&
-                        flight.keyActive == true &&
-                        flight.escEnabled == true &&
-                        flight.benchRunning == false &&
-                        battery.isLive(time) &&
-                        battery.level == BatteryLevel.NORMAL
-                )
-    }
-
-    fun invalidatePreparation(reason: String) {
-        if (
-            preparePhase ==
-            PreparePhase.PREPARING ||
-            preparePhase ==
-            PreparePhase.READY
-        ) {
-            prepareToken++
-            preparePhase = PreparePhase.FAILED
-            prepareMessage = reason
-        }
-    }
 }
 
 
