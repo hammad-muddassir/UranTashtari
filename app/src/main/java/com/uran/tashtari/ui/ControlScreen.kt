@@ -1,14 +1,13 @@
 package com.uran.tashtari.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -20,690 +19,147 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.uran.tashtari.network.LinkStatus
-import com.uran.tashtari.network.UranProtocol
-import kotlin.math.max
-import kotlin.math.roundToInt
 import java.util.Locale
-import android.content.ClipData
-import android.content.ClipboardManager
-import android.widget.Toast
+import kotlin.math.roundToInt
 
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-
-import androidx.compose.ui.platform.LocalContext
-
-
-private const val AXIS_MAX = 20   // BLE v0.1 limit: -20..+20
+private const val AXIS_MAX = 20
 
 @Composable
 fun ControlScreen(
     state: UranAppState,
     onConnect: () -> Unit,
-    onPrepare: () -> Unit,
     modifier: Modifier = Modifier
-)
- {
-     if (state.flightTestSelected) {
-         FlightTestControls(state, modifier)
-         return
-     }
-
-     val context = LocalContext.current
-
-     var terminalExpanded by remember {
-         mutableStateOf(false)
-     }
-
-     val flightMode =
-         if (
-             state.flight.legacyFresh(
-                 state.now
-             )
-         ) {
-             state.flight.flightMode
-                 ?: "UNKNOWN"
-         } else {
-             "UNKNOWN"
-         }
-
-     val link by state.sender.state.collectAsState()
-    val manualEnabled = link.status == LinkStatus.READY && !state.stopped
-    val items = healthItems(state, link)
-
-    Column(modifier.fillMaxSize()) {
-
-        // ===== Pinned: always visible, never scrolls away =====
-       
-Column(
-    Modifier
-        .fillMaxWidth()
-        .padding(
-            start = 16.dp,
-            end = 16.dp,
-            top = 12.dp,
-            bottom = 8.dp
-        ),
-    verticalArrangement = Arrangement.spacedBy(10.dp)
 ) {
-    TextButton(
-        enabled = manualEnabled,
-        onClick = {
-            state.disarm()
-            state.flightTestSelected = true
-        }
-    ) { Text("MANUAL FLIGHT TEST") }
-
-    ScreenHeader(
-        "Flight mode: $flightMode | throttle locked"
-    ) {
-        if (state.stopped) {
-            StatusPill("UI LOCKED", Danger)
-        } else {
-            StatusPill(
-                items[0].value,
-                items[0].health.tint()
-            )
-        }
-    }
-
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        Button(
-            onClick = { state.disarm() },
-            modifier = Modifier
-                .weight(1f)
-                .height(60.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Warn,
-                contentColor = Color(0xFF1A1200)
-            )
-        ) {
-            Text(
-                "DISARM",
-                fontWeight = FontWeight.Bold
-            )
-        }
-
-        Button(
-            onClick = {
-                if (state.stopped) {
-                    state.resetUi()
-                } else {
-                    state.estop()
-                }
-            },
-            modifier = Modifier
-                .weight(1f)
-                .height(60.dp),
-            shape = RoundedCornerShape(16.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor =
-                    if (state.stopped) {
-                        Color(0xFF475569)
-                    } else {
-                        Danger
-                    }
-            )
-        ) {
-            Text(
-                if (state.stopped) "RESET UI"
-                else "E-STOP",
-                fontWeight = FontWeight.Bold
-            )
-        }
-    }
-
-    if (state.stopped) {
-        Text(
-            "E-STOP locked. Physical Flight reset " +
-                "and fresh telemetry required.",
-            color = Danger,
-            fontSize = 12.sp
-        )
-    }
-
-    BatteryBanner(state)
-}
-
-        // ===== Scrollable area =====
-        Column(
-            Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            verticalArrangement = Arrangement.spacedBy(14.dp)
-        ) {
-
-            // ---------- Connection (compact) ----------
-            Panel {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        SectionLabel("COMM LINK")
-                        Text(link.message, color = Color.White, fontSize = 13.sp)
-                        Text(
-                            "Last reply: ${state.lastReply}",
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace
-                        )
-                    }
-                    Spacer(Modifier.width(10.dp))
-                    Button(
-                        onClick = {
-                            if (link.status == LinkStatus.IDLE) onConnect() else state.sender.disconnect()
-                        },
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (link.status == LinkStatus.IDLE) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.secondary,
-                            contentColor = if (link.status == LinkStatus.IDLE) Color(0xFF04121A) else Color.White
-                        )
-                    ) {
-                        Text(
-                            when (link.status) {
-                                LinkStatus.IDLE -> "CONNECT"
-                                LinkStatus.READY -> "DISCONNECT"
-                                else -> "CANCEL"
-                            },
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-                }
-                Text(
-                    "Device: ${UranProtocol.DEVICE_NAME}",
-                    color = DisabledGrey, fontSize = 10.sp
-                )
-            }
-
-            // ---------- Joysticks ----------
-            Panel {
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    SectionLabel("FLIGHT STICKS")
-                    Text(
-                        if (manualEnabled) "LIVE" else "LOCKED",
-                        color = if (manualEnabled) Ok else Muted,
-                        fontSize = 12.sp, fontWeight = FontWeight.Bold
-                    )
-                }
-                Spacer(Modifier.height(10.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-
-                    // Left: throttle (up) + yaw (left/right)
-                    StickBlock(
-                        title = "THROTTLE / YAW",
-                        readout = "THR %3d%%\nYAW %+3d".format(state.throttleSelected, state.yaw),
-                        enabled = manualEnabled,
-                        modifier = Modifier.weight(1f),
-                        onChange = { x, y ->
-                            state.yaw = (x * AXIS_MAX).roundToInt()
-                            // Up only: pushing down stays at 0, throttle is never negative.
-                            // UI only. This value is never put into a BLE packet.
-                            state.throttleSelected = (max(0f, y) * 100f).roundToInt()
-                        },
-                        onRelease = {
-                            state.yaw = 0
-                            state.throttleSelected = 0
-                        }
-                    )
-
-                    // Right: pitch (up/down) + roll (left/right)
-                    StickBlock(
-                        title = "PITCH / ROLL",
-                        readout = "PITCH %+3d\nROLL  %+3d".format(state.pitch, state.roll),
-                        enabled = manualEnabled,
-                        modifier = Modifier.weight(1f),
-                        onChange = { x, y ->
-                            state.roll = (x * AXIS_MAX).roundToInt()
-                            state.pitch = (y * AXIS_MAX).roundToInt()
-                        },
-                        onRelease = {
-                            state.roll = 0
-                            state.pitch = 0
-                        }
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    "Roll, pitch and yaw return to 0 on release. Throttle is shown on screen only and is NOT transmitted. " +
-                            "Directions (right = roll +, up = pitch +, right = yaw +) are placeholders until Usman confirms the sign convention.",
-                    color = DisabledGrey, fontSize = 11.sp
-                )
-            }
-
-            
-Panel {
-    SectionLabel("BENCH PREPARATION")
-
-    Spacer(Modifier.height(8.dp))
-
-    Row(
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Checkbox(
-            checked = state.cellsVerified,
-            onCheckedChange = {
-                state.cellsVerified = it
-            }
-        )
-
-        Text(
-            "3S LiPo cells individually checked safe",
-            color = Muted,
-            fontSize = 11.sp
-        )
-    }
-
-    Row(
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Checkbox(
-            checked = state.benchAreaVerified,
-            onCheckedChange = {
-                state.benchAreaVerified = it
-            }
-        )
-
-        Text(
-            "Propellers removed and area clear",
-            color = Muted,
-            fontSize = 11.sp
-        )
-    }
-
-    Spacer(Modifier.height(8.dp))
-
-    Button(
-        onClick = onPrepare,
-        enabled =
-            link.status == LinkStatus.READY &&
-            !state.stopped &&
-            state.cellsVerified &&
-            state.benchAreaVerified &&
-            state.preparePhase !=
-                UranAppState.PreparePhase.PREPARING,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(48.dp),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Text(
-            "PREPARE DRONE",
-            fontWeight = FontWeight.Bold
-        )
-    }
-
-    val prepText =
-        if (
-            state.preparePhase ==
-                UranAppState.PreparePhase.READY &&
-            !state.canBenchReady()
-        ) {
-            "STALE: Repeat preparation"
-        } else {
-            "${state.preparePhase}: ${state.prepareMessage}"
-        }
-
-    Text(
-        prepText,
-        color = when (state.preparePhase) {
-            UranAppState.PreparePhase.READY ->
-                if (state.canBenchReady()) Ok else Warn
-
-            UranAppState.PreparePhase.FAILED ->
-                Danger
-
-            else -> Muted
-        },
-        fontSize = 11.sp
-    )
-}
-
-
-            // ---------- Health (real data or UNKNOWN) ----------
-            items.chunked(3).forEach { rowItems ->
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    rowItems.forEach { HealthPill(it.label, it.value, it.health, Modifier.weight(1f)) }
-                }
-            }
-
-            
-
-            // ---------- Mode: AUTO is not implemented ----------
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(PanelColor)
-                    .padding(4.dp)
-            ) {
-                Box(
-                    Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(MaterialTheme.colorScheme.primary)
-                        .padding(vertical = 12.dp),
-                    contentAlignment = Alignment.Center
-                ) { Text("MANUAL", fontWeight = FontWeight.Bold, color = Color(0xFF04121A)) }
-                Box(
-                    Modifier.weight(1f).padding(vertical = 12.dp),
-                    contentAlignment = Alignment.Center
-                ) { Text("AUTO (later)", fontWeight = FontWeight.Bold, color = DisabledGrey) }
-            }
-            BatteryRow(state)
-            Panel {
-                SectionLabel(
-                    "THROTTLE + LIVE TX/RX"
-                )
-
-                Spacer(Modifier.height(10.dp))
-
-                Row(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement =
-                        Arrangement.spacedBy(12.dp)
-                ) {
-                    Column(
-                        Modifier.weight(1f)
-                    ) {
-                        Text(
-                            "THROTTLE",
-                            color = Muted,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(Modifier.height(6.dp))
-
-                        Text(
-                            "Requested " +
-                                    "${state.throttleSelected}%",
-                            color = Color.White,
-                            fontFamily =
-                                FontFamily.Monospace,
-                            fontSize = 11.sp
-                        )
-
-                        Text(
-                            "Written " +
-                                    "${state.throttleTransmitted}%",
-                            color = Warn,
-                            fontFamily =
-                                FontFamily.Monospace,
-                            fontSize = 11.sp
-                        )
-
-                        Text(
-                            "LOCKED - BENCH ONLY",
-                            color = Danger,
-                            fontSize = 10.sp
-                        )
-                    }
-
-                    Column(
-                        Modifier.weight(1f)
-                    ) {
-                        Text(
-                            "LIVE TX / RX",
-                            color = Muted,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-
-                        Spacer(Modifier.height(6.dp))
-
-                        Text(
-                            "TX: " +
-                                    (state.lastTx?.format() ?: "--"),
-                            color = Ok,
-                            fontSize = 10.sp,
-                            maxLines = 2
-                        )
-
-                        Text(
-                            "RX: " +
-                                    (state.lastRx?.format() ?: "--"),
-                            color = Color.White,
-                            fontSize = 10.sp,
-                            maxLines = 2
-                        )
-
-                        Text(
-                            "ERR: " +
-                                    (state.lastError?.text ?: "--"),
-                            color = Danger,
-                            fontSize = 10.sp,
-                            maxLines = 2
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                TextButton(
-                    onClick = {
-                        terminalExpanded =
-                            !terminalExpanded
-                    }
-                ) {
-                    Text(
-                        if (terminalExpanded) {
-                            "Hide terminal"
-                        } else {
-                            "Show terminal"
-                        }
-                    )
-                }
-
-                if (terminalExpanded) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement =
-                            Arrangement.SpaceBetween
-                    ) {
-                        TextButton(
-                            onClick = {
-                                val clipboard =
-                                    context.getSystemService(
-                                        ClipboardManager::class.java
-                                    )
-
-                                clipboard.setPrimaryClip(
-                                    ClipData.newPlainText(
-                                        "URAN TASHTRI TX/RX",
-                                        state.trafficText()
-                                    )
-                                )
-
-                                Toast.makeText(
-                                    context,
-                                    "Terminal copied",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            }
-                        ) {
-                            Text("Copy")
-                        }
-
-                        TextButton(
-                            onClick = {
-                                state.clearTraffic()
-                            }
-                        ) {
-                            Text("Clear")
-                        }
-                    }
-
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 180.dp)
-                            .verticalScroll(
-                                rememberScrollState()
-                            )
-                            .background(
-                                Color(0xFF070C16)
-                            )
-                            .padding(8.dp)
-                    ) {
-                        if (
-                            state.trafficLog.isEmpty()
-                        ) {
-                            Text(
-                                "No TX/RX messages",
-                                color = Muted,
-                                fontSize = 11.sp
-                            )
-                        }
-
-                        state.trafficLog
-                            .take(150)
-                            .forEach { entry ->
-                                Text(
-                                    entry.format(),
-                                    color =
-                                        if (entry.tag == "TX") {
-                                            Ok
-                                        } else {
-                                            Muted
-                                        },
-                                    fontFamily =
-                                        FontFamily.Monospace,
-                                    fontSize = 10.sp
-                                )
-                            }
-                    }
-                }
-            }
-
-            // ---------- Throttle: four separate meanings, never mixed ----------
-            Panel {
-                SectionLabel("THROTTLE STATE")
-                Spacer(Modifier.height(6.dp))
-                ThrottleRow("Requested (stick, UI only)", "${state.throttleSelected} %")
-                ThrottleRow(
-                    "Written to COMM",
-                    "${state.throttleTransmitted}% " +
-                            "(physical throttle locked)",
-                    Warn
-                )
-                ThrottleRow("Flight-confirmed (simulation)", "UNKNOWN", Muted)
-                ThrottleRow("Physical motor throttle", "DISABLED", Danger)
-            }
-
-            // ---------- Simulation controls: disabled, nothing is sent ----------
-            Panel {
-                SectionLabel("SIMULATION")
-                Spacer(Modifier.height(10.dp))
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PendingAction("LEVEL CALIBRATE", "Needs COMM relay and Flight ACK")
-                    PendingAction("START SIMULATION", "Enabled only when Flight confirms MPU, calibration, fresh RC and no ESTOP")
-                    PendingAction("STOP SIMULATION", "Waiting for a verified Flight stop command")
-                }
-            }
-
-            Spacer(Modifier.height(8.dp))
-       
-     Panel {
-         SectionLabel(
-             "MOTOR TEST - FUTURE FIRMWARE"
-         )
-
-         Spacer(Modifier.height(8.dp))
-
-         Text(
-             "Disabled until COMM and Flight " +
-                     "implement verified BLE authorization " +
-                     "and motor-stop acknowledgements.",
-             color = DisabledGrey,
-             fontSize = 11.sp
-         )
-
-         Spacer(Modifier.height(8.dp))
-
-                  Row(
-             Modifier.fillMaxWidth(),
-             horizontalArrangement =
-                 Arrangement.spacedBy(4.dp)
-         ) {
-             listOf(
-                 "FL", "FR", "RR", "RL", "ALL"
-             ).forEach { motor ->
-                 OutlinedButton(
-                     onClick = {},
-                     enabled = false,
-                     modifier =
-                         Modifier.weight(1f),
-                     contentPadding =
-                         PaddingValues(0.dp)
-                 ) {
-                     Text(
-                         motor,
-                         fontSize = 10.sp
-                     )
-                 }
-             }
-         }
-     }       // closes Panel (MOTOR TEST)
-
-    }        // closes the scrollable Column
-   }         // closes Column(modifier.fillMaxSize())
-}            // closes fun ControlScreen
-
-
-@Composable
-private fun FlightTestControls(state: UranAppState, modifier: Modifier = Modifier) {
     val link by state.sender.state.collectAsState()
     val connected = link.status == LinkStatus.READY
-    val armed = state.flightArmed && connected && !state.stopped
+    val manual = connected && state.flightTestSelected
+    val armed = manual && state.flightArmed && !state.stopped
+    val canPrepare = manual && !state.stopped && !armed && !state.flightArmPending
+    val accent = MaterialTheme.colorScheme.primary
 
-    Column(modifier.fillMaxSize().padding(16.dp)) {
-        ScreenHeader("Manual flight test") {
-            StatusPill(
-                if (state.flightArmPending) "ARMING" else state.liveStatus,
-                if (armed) Warn else Muted
-            )
+    val flightStatus = when {
+        state.stopped -> "E-STOP LOCKED"
+        !connected -> "DISCONNECTED"
+        state.flightArmPending -> "ARMING"
+        armed -> "ARMED"
+        state.liveStatus == "READY" && manual -> "READY"
+        state.liveStatus == "FAULT" -> "FAULT"
+        state.liveStatus == "CFG" -> "CHECK CONFIG"
+        else -> "DISARMED"
+    }
+    val statusColor = when {
+        state.stopped || state.liveStatus == "FAULT" -> Danger
+        armed || state.flightArmPending || state.liveStatus == "CFG" -> Warn
+        flightStatus == "READY" -> Ok
+        else -> Muted
+    }
+
+    Column(
+        modifier.fillMaxSize().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Spacer(Modifier.height(4.dp))
+        ScreenHeader("Flight controller") {
+            StatusPill(flightStatus, statusColor)
+        }
+
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Drone link", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    link.message,
+                    color = Muted,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            OutlinedButton(
+                onClick = {
+                    if (link.status == LinkStatus.IDLE) onConnect() else state.sender.disconnect()
+                },
+                enabled = !armed && !state.flightArmPending
+            ) {
+                Text(
+                    when (link.status) {
+                        LinkStatus.IDLE -> "Connect"
+                        LinkStatus.READY -> "Disconnect"
+                        else -> "Cancel"
+                    }
+                )
+            }
         }
 
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 onClick = { state.disarm() },
-                modifier = Modifier.weight(1f)
-            ) { Text("DISARM") }
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Warn,
+                    contentColor = Color(0xFF1A1200)
+                )
+            ) { Text("DISARM", fontWeight = FontWeight.Bold) }
+
             Button(
                 onClick = { state.estop() },
-                colors = ButtonDefaults.buttonColors(containerColor = Danger),
-                modifier = Modifier.weight(1f)
-            ) { Text("E-STOP") }
+                modifier = Modifier.weight(1f),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(0xFFB91C1C),
+                    contentColor = Color.White
+                )
+            ) { Text("E-STOP", fontWeight = FontWeight.Bold) }
         }
 
-        Spacer(Modifier.height(8.dp))
         FlightBatteryStrip(state, connected)
-        Spacer(Modifier.height(8.dp))
 
         Column(
-            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
+                .padding(bottom = 12.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                    .background(PanelColor).padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier.weight(1f).height(36.dp)
+                        .clip(RoundedCornerShape(9.dp)).background(accent.copy(alpha = 0.16f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("Manual", color = accent, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
+                Box(Modifier.weight(1f).height(36.dp), contentAlignment = Alignment.Center) {
+                    Text("Auto (in development)", color = Muted, fontSize = 11.sp, maxLines = 1)
+                }
+            }
+
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
                 OutlinedButton(
-                    enabled = connected && !state.stopped && !armed && !state.flightArmPending,
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                    enabled = canPrepare,
                     onClick = { state.sender.sendCommand("LEVEL") }
-                ) { Text("CALIBRATE LEVEL") }
+                ) { Text("Calibrate level", maxLines = 1) }
+
                 Button(
-                    enabled = connected && !state.stopped && !armed && !state.flightArmPending &&
-                        state.liveStatus == "READY",
-                    onClick = { state.armFlight() }
-                ) { Text("ARM FLIGHT") }
+                    modifier = Modifier.weight(1f),
+                    contentPadding = PaddingValues(horizontal = 4.dp),
+                    enabled = if (state.stopped) connected else canPrepare && state.liveStatus == "READY",
+                    onClick = {
+                        if (state.stopped) state.resetUi() else state.armFlight()
+                    }
+                ) { Text(if (state.stopped) "Reset E-STOP" else "Arm flight", maxLines = 1) }
             }
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
@@ -730,29 +186,47 @@ private fun FlightTestControls(state: UranAppState, modifier: Modifier = Modifie
                     }
                 )
             }
-            Text("Throttle ${state.throttleSelected}%  |  BLE written ${state.throttleTransmitted}%")
-            Slider(
-                value = state.throttleSelected.toFloat(),
-                onValueChange = { state.throttleSelected = it.roundToInt() },
-                valueRange = 0f..100f,
-                enabled = armed
-            )
-            Text(
-                when (state.liveStatus) {
-                    "CFG" -> "Verify the aircraft configuration on the FLIGHT ESP32."
-                    "READY" -> "Keep throttle at zero and release both sticks before arming."
-                    "ARMED" -> "Throttle holds its selected value when you lift your finger."
-                    "FAULT" -> "Flight stopped. Check the connection, key and attitude."
-                    else -> "Level the frame, then cycle the physical key off and on."
-                },
-                color = Muted
-            )
-            TextButton(
-                onClick = {
-                    state.disarm()
-                    state.flightTestSelected = false
+
+            Panel {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        "Throttle ${state.throttleSelected}%",
+                        modifier = Modifier.weight(1f),
+                        color = Color.White,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "BLE sent ${state.throttleTransmitted}%",
+                        color = Muted, fontSize = 11.sp, fontFamily = FontFamily.Monospace
+                    )
                 }
-            ) { Text("EXIT FLIGHT TEST") }
+                Slider(
+                    value = state.throttleSelected.toFloat(),
+                    onValueChange = { state.throttleSelected = it.roundToInt() },
+                    valueRange = 0f..100f,
+                    enabled = armed
+                )
+            }
+
+            Text(
+                when {
+                    state.stopped -> "Reset the Flight ESP32 after E-STOP, then wait for fresh telemetry before tapping Reset E-STOP."
+                    !connected -> "Connect to the drone to enable flight controls."
+                    state.flightArmPending -> "Waiting for arm confirmation from Flight."
+                    armed -> "Throttle holds when released. Tabs unlock after disarm."
+                    state.liveStatus == "READY" -> "Keep throttle at zero and release both sticks before arming."
+                    state.liveStatus == "CFG" -> "Verify the aircraft configuration on the FLIGHT ESP32."
+                    state.liveStatus == "FAULT" -> "Flight stopped. Check Diagnostics for the fault."
+                    else -> "Keep the frame level and check the physical key and Flight status."
+                },
+                color = if (state.stopped || state.liveStatus == "FAULT") Danger else Muted,
+                fontSize = 12.sp
+            )
         }
     }
 }
@@ -763,7 +237,6 @@ private fun FlightBatteryStrip(state: UranAppState, connected: Boolean) {
     val volts = battery.rawVolts?.takeIf { it.isFinite() }
     val hasData = battery.lastUpdateMs != 0L
     val ageMs = (state.now - battery.lastUpdateMs).coerceAtLeast(0L)
-    // Match the current Flight firmware's 1500 ms battery freshness limit.
     val stale = hasData && ageMs >= 1500L
     val live = connected && hasData && !stale && battery.sensorValid && volts != null
     val status = when {
@@ -771,70 +244,50 @@ private fun FlightBatteryStrip(state: UranAppState, connected: Boolean) {
         !hasData -> "NO DATA"
         !battery.sensorValid || volts == null -> "INVALID"
         stale -> "STALE"
+        battery.level == BatteryLevel.CRITICAL -> "CRITICAL"
+        battery.level == BatteryLevel.LOW -> "LOW"
         else -> "LIVE"
     }
-    val statusColor = when {
-        !connected || !hasData -> Muted
-        !live -> Warn
-        else -> Ok
-    }
-    val voltageColor = when {
-        !live -> Muted
-        battery.level == BatteryLevel.CRITICAL -> Danger
-        battery.level == BatteryLevel.LOW -> Warn
-        else -> Color.White
+    val statusColor = when (status) {
+        "LIVE" -> Ok
+        "CRITICAL" -> Danger
+        "LOW", "INVALID", "STALE" -> Warn
+        else -> Muted
     }
     val voltageText = if (live) String.format(Locale.US, "%.3f V", volts) else "-- V"
     val minimumText = battery.minVolts?.takeIf { it.isFinite() }?.let {
         String.format(Locale.US, "App min %.3f V", it)
     } ?: "App min -- V"
-    val ageText = if (hasData) {
-        String.format(Locale.US, "Last BAT %.1f s ago", ageMs / 1000.0)
+    val telemetryText = if (connected && hasData) {
+        String.format(Locale.US, "%s · %.1f s ago", status, ageMs / 1000.0)
     } else {
-        "Waiting for BAT"
+        status
     }
+    val shape = RoundedCornerShape(14.dp)
 
-    // Always reserve the same space: telemetry must not move the flight sticks.
-    Column(
-        Modifier.fillMaxWidth().height(100.dp)
-            .clip(RoundedCornerShape(12.dp))
-            .background(PanelColor)
-            .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.SpaceBetween
+    // Fixed height keeps the stick positions steady as battery telemetry arrives.
+    Row(
+        Modifier.fillMaxWidth().height(64.dp).clip(shape)
+            .background(PanelColor).border(1.dp, LineColor, shape)
+            .padding(horizontal = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            SectionLabel("BATTERY")
             Text(
-                "BATTERY / LATEST FLIGHT READING",
-                modifier = Modifier.weight(1f),
-                color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold,
-                maxLines = 1, overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(status, color = statusColor, fontSize = 10.sp,
-                fontWeight = FontWeight.Bold, maxLines = 1)
-        }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                voltageText, modifier = Modifier.weight(1f), color = voltageColor,
-                fontSize = 26.sp, fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace, maxLines = 1,
-                overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                ageText, modifier = Modifier.weight(1f), color = Muted,
-                fontSize = 10.sp, textAlign = TextAlign.End, maxLines = 1,
+                voltageText,
+                color = if (live) Color.White else Muted,
+                fontSize = 21.sp,
+                fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
         }
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                minimumText, modifier = Modifier.weight(1f), color = Muted,
-                fontSize = 11.sp, fontFamily = FontFamily.Monospace,
-                maxLines = 1, overflow = TextOverflow.Ellipsis
-            )
-            Spacer(Modifier.width(8.dp))
-            Text("ESP telemetry", color = Muted, fontSize = 10.sp, maxLines = 1)
+        Column(horizontalAlignment = Alignment.End) {
+            Text(telemetryText, color = statusColor, fontSize = 10.sp, maxLines = 1)
+            Text(minimumText, color = Muted, fontSize = 10.sp, maxLines = 1)
         }
     }
 }
@@ -870,15 +323,3 @@ private fun StickBlock(
         )
     }
 }
-
-@Composable
-private fun ThrottleRow(label: String, value: String, valueColor: Color = Color.White) {
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 3.dp),
-        horizontalArrangement = Arrangement.SpaceBetween
-    ) {
-        Text(label, color = Muted, fontSize = 13.sp)
-        Text(value, color = valueColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
-    }
-}
-
