@@ -23,6 +23,7 @@ import com.uran.tashtari.network.LinkStatus
 import com.uran.tashtari.network.UranProtocol
 import kotlin.math.max
 import kotlin.math.roundToInt
+import java.util.Locale
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.widget.Toast
@@ -685,8 +686,12 @@ private fun FlightTestControls(state: UranAppState, modifier: Modifier = Modifie
             ) { Text("E-STOP") }
         }
 
+        Spacer(Modifier.height(8.dp))
+        FlightBatteryStrip(state, connected)
+        Spacer(Modifier.height(8.dp))
+
         Column(
-            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+            Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -753,6 +758,88 @@ private fun FlightTestControls(state: UranAppState, modifier: Modifier = Modifie
 }
 
 @Composable
+private fun FlightBatteryStrip(state: UranAppState, connected: Boolean) {
+    val battery = state.battery
+    val volts = battery.rawVolts?.takeIf { it.isFinite() }
+    val hasData = battery.lastUpdateMs != 0L
+    val ageMs = (state.now - battery.lastUpdateMs).coerceAtLeast(0L)
+    // Match the current Flight firmware's 1500 ms battery freshness limit.
+    val stale = hasData && ageMs >= 1500L
+    val live = connected && hasData && !stale && battery.sensorValid && volts != null
+    val status = when {
+        !connected -> "DISCONNECTED"
+        !hasData -> "NO DATA"
+        !battery.sensorValid || volts == null -> "INVALID"
+        stale -> "STALE"
+        else -> "LIVE"
+    }
+    val statusColor = when {
+        !connected || !hasData -> Muted
+        !live -> Warn
+        else -> Ok
+    }
+    val voltageColor = when {
+        !live -> Muted
+        battery.level == BatteryLevel.CRITICAL -> Danger
+        battery.level == BatteryLevel.LOW -> Warn
+        else -> Color.White
+    }
+    val voltageText = if (live) String.format(Locale.US, "%.3f V", volts) else "-- V"
+    val minimumText = battery.minVolts?.takeIf { it.isFinite() }?.let {
+        String.format(Locale.US, "App min %.3f V", it)
+    } ?: "App min -- V"
+    val ageText = if (hasData) {
+        String.format(Locale.US, "Last BAT %.1f s ago", ageMs / 1000.0)
+    } else {
+        "Waiting for BAT"
+    }
+
+    // Always reserve the same space: telemetry must not move the flight sticks.
+    Column(
+        Modifier.fillMaxWidth().height(100.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(PanelColor)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "BATTERY / LATEST FLIGHT READING",
+                modifier = Modifier.weight(1f),
+                color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(status, color = statusColor, fontSize = 10.sp,
+                fontWeight = FontWeight.Bold, maxLines = 1)
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                voltageText, modifier = Modifier.weight(1f), color = voltageColor,
+                fontSize = 26.sp, fontWeight = FontWeight.Bold,
+                fontFamily = FontFamily.Monospace, maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                ageText, modifier = Modifier.weight(1f), color = Muted,
+                fontSize = 10.sp, textAlign = TextAlign.End, maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                minimumText, modifier = Modifier.weight(1f), color = Muted,
+                fontSize = 11.sp, fontFamily = FontFamily.Monospace,
+                maxLines = 1, overflow = TextOverflow.Ellipsis
+            )
+            Spacer(Modifier.width(8.dp))
+            Text("ESP telemetry", color = Muted, fontSize = 10.sp, maxLines = 1)
+        }
+    }
+}
+
+@Composable
 private fun StickBlock(
     title: String,
     readout: String,
@@ -794,3 +881,4 @@ private fun ThrottleRow(label: String, value: String, valueColor: Color = Color.
         Text(value, color = valueColor, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
     }
 }
+
