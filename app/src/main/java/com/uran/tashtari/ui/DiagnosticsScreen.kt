@@ -12,9 +12,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -27,6 +31,12 @@ import androidx.compose.ui.unit.sp
 
 @Composable
 fun DiagnosticsScreen(state: UranAppState, modifier: Modifier = Modifier) {
+    var showSerialMonitor by remember { mutableStateOf(false) }
+    if (showSerialMonitor) {
+        SerialMonitorScreen(state, onBack = { showSerialMonitor = false }, modifier = modifier)
+        return
+    }
+
     val context = LocalContext.current
     val link by state.sender.state.collectAsState()
     val items = healthItems(state, link)
@@ -39,6 +49,11 @@ fun DiagnosticsScreen(state: UranAppState, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         ScreenHeader("Diagnostics")
+
+        OutlinedButton(
+            onClick = { showSerialMonitor = true },
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Open Serial Monitor") }
 
         Panel {
             SectionLabel("SYSTEM HEALTH")
@@ -134,40 +149,6 @@ fun DiagnosticsScreen(state: UranAppState, modifier: Modifier = Modifier) {
             BatteryDetailPanel(state)
 
         }
-
-        Panel {
-            SectionLabel(
-                "BLE TRAFFIC SETTINGS"
-            )
-
-            Spacer(Modifier.height(8.dp))
-
-            Text(
-                if (state.verboseTraffic) {
-                    "Verbose TX/RX: ON"
-                } else {
-                    "Verbose TX/RX: OFF"
-                },
-                color =
-                    MaterialTheme.colorScheme.primary,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.clickable {
-                    state.verboseTraffic =
-                        !state.verboseTraffic
-                }
-            )
-
-            Spacer(Modifier.height(6.dp))
-
-            Text(
-                "When OFF, repetitive joystick " +
-                        "packets and ACK,COMM_RC replies " +
-                        "are hidden from the terminal.",
-                color = DisabledGrey,
-                fontSize = 11.sp
-            )
-        }
-
 
         Panel {
             SectionLabel("FLIGHT ATTITUDE")
