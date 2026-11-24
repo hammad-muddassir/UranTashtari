@@ -20,6 +20,7 @@ data class LogEntry(val timeMs: Long, val tag: String, val text: String)
 data class HealthItem(val label: String, val value: String, val health: Health, val detail: String)
 
 private val timeFormat = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
+const val SERIAL_LINE_LIMIT = 4096
 
 fun LogEntry.format(): String = "${timeFormat.format(Date(timeMs))} [$tag] $text"
 
@@ -68,15 +69,14 @@ class UranAppState(
     val flight = FlightTelemetry()
 
     val log = mutableStateListOf<LogEntry>()
-    val trafficLog = mutableStateListOf<LogEntry>()
+    private val trafficLog = mutableStateListOf<LogEntry>()
 
     var lastTx by mutableStateOf<LogEntry?>(null)
     var lastRx by mutableStateOf<LogEntry?>(null)
     var lastError by mutableStateOf<LogEntry?>(null)
 
-    var verboseTraffic by mutableStateOf(false)
-
     fun addLog(tag: String, text: String) {
+        if (tag == "BLE") recordWire(tag, text)
         log.add(
             0,
             LogEntry(
@@ -101,9 +101,11 @@ class UranAppState(
     }
 
     fun trafficText(): String =
-        trafficLog.asReversed().joinToString("\n") {
+        trafficLog.toList().joinToString("\n") {
             it.format()
         }
+
+    fun serialLines(): List<LogEntry> = trafficLog.toList()
 
     fun clearTraffic() {
         trafficLog.clear()
@@ -126,22 +128,9 @@ class UranAppState(
             lastError = entry
         }
 
-        val repetitive =
-            (tag == "TX" &&
-                    text.startsWith("C,")) ||
-                    (tag == "RX" &&
-                            text.startsWith("ACK,COMM_RC,"))
-
-        if (repetitive && !verboseTraffic) {
-            return
-        }
-
-        trafficLog.add(0, entry)
-
-        if (trafficLog.size > 150) {
-            trafficLog.removeAt(
-                trafficLog.lastIndex
-            )
+        trafficLog.add(entry)
+        if (trafficLog.size > SERIAL_LINE_LIMIT) {
+            trafficLog.removeRange(0, 128)
         }
     }
 
@@ -223,13 +212,14 @@ class UranAppState(
     }
 
     fun handleReply(line: String) {
+        recordWire("RX", line)
+        if (line.startsWith("PWM,") || line.startsWith("YAW_CHECK,")) return
         val time = SystemClock.elapsedRealtime()
         if (line.startsWith("FS,")) {
             val status = line.substringAfter(',')
             if (status != "ARMED" && status != "READY" &&
                 status != "SAFE" && status != "CFG" && status != "FAULT") return
 
-            if (liveStatus != status) recordWire("RX", line)
             lastLiveStatusAt = time
             when (status) {
                 "ARMED" -> {
@@ -247,7 +237,6 @@ class UranAppState(
             return
         }
 
-        recordWire("RX", line)
         if (line == "ERR,FLIGHT_ARM" || line == "ACK,DISARMED" ||
             line == "ACK,ESTOP" || line == "ERR,MPU_FAULT") {
             resetLiveFlight(if (line == "ERR,FLIGHT_ARM") "ARM REJECTED" else "SAFE")
