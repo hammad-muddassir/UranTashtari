@@ -95,7 +95,6 @@ fun AppRoot(modifier: Modifier = Modifier) {
     fun leaveManualFlight() {
         if (state.flightTestSelected) {
             state.disarm()
-            state.flightTestSelected = false
         } else {
             state.neutralAll()
         }
@@ -117,19 +116,9 @@ fun AppRoot(modifier: Modifier = Modifier) {
         if (link.status == LinkStatus.READY) {
             state.resetLinkStats()
         } else {
-            state.flightTestSelected = false
+            state.disarm()
             state.resetLiveFlight("DISCONNECTED")
             relay.clearSamples()
-        }
-    }
-
-    LaunchedEffect(link.status, tab, foreground) {
-        if (link.status == LinkStatus.READY && tab == FLIGHT_TAB && foreground &&
-            !state.flightTestSelected
-        ) {
-            // Enter manual mode with neutral inputs and an explicit disarm.
-            state.disarm()
-            state.flightTestSelected = true
         }
     }
 
@@ -150,7 +139,7 @@ fun AppRoot(modifier: Modifier = Modifier) {
 
         while (true) {
             seq = (seq + 1) and 0xFF
-            val manual = state.flightTestSelected && tab == FLIGHT_TAB && foreground
+            val manual = state.flightTestSelected && tab == FLIGHT_TAB && foreground && !state.stopped
             val cmd = DroneCommand(
                 seq = seq,
                 roll = if (manual) state.roll else 0,
