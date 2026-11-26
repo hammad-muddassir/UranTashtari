@@ -34,7 +34,7 @@ fun ControlScreen(
     val connected = link.status == LinkStatus.READY
     val manual = connected && state.flightTestSelected
     val armed = manual && state.flightArmed && !state.stopped
-    val canPrepare = manual && !state.stopped && !armed && !state.flightArmPending
+    val canPrepare = connected && !state.stopped && !armed && !state.flightArmPending
     val accent = MaterialTheme.colorScheme.primary
 
     val flightStatus = when {
@@ -116,6 +116,12 @@ fun ControlScreen(
             ) { Text("E-STOP", fontWeight = FontWeight.Bold) }
         }
 
+        OutlinedButton(
+            modifier = Modifier.fillMaxWidth(),
+            enabled = manual || (connected && !state.stopped),
+            onClick = { if (manual) state.disarm() else state.enableControls() }
+        ) { Text(if (manual) "Controls ON - Turn off" else "Controls OFF - Turn on") }
+
         FlightBatteryStrip(state, connected)
 
         Column(
@@ -155,7 +161,7 @@ fun ControlScreen(
                 Button(
                     modifier = Modifier.weight(1f),
                     contentPadding = PaddingValues(horizontal = 4.dp),
-                    enabled = if (state.stopped) connected else canPrepare && state.liveStatus == "READY",
+                    enabled = if (state.stopped) connected else canPrepare && manual && state.liveStatus == "READY",
                     onClick = {
                         if (state.stopped) state.resetUi() else state.armFlight()
                     }
@@ -222,7 +228,8 @@ fun ControlScreen(
                     state.liveStatus == "READY" -> "Keep throttle at zero and release both sticks before arming."
                     state.liveStatus == "CFG" -> "Verify the aircraft configuration on the FLIGHT ESP32."
                     state.liveStatus == "FAULT" -> "Flight stopped. Check Diagnostics for the fault."
-                    else -> "Keep the frame level and check the physical key and Flight status."
+                    !manual -> "Turn controls on, then use Arm flight when ready."
+                    else -> "Keep the frame level and check Flight status."
                 },
                 color = if (state.stopped || state.liveStatus == "FAULT") Danger else Muted,
                 fontSize = 12.sp
