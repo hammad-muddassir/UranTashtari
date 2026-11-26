@@ -30,7 +30,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
-fun DiagnosticsScreen(state: UranAppState, modifier: Modifier = Modifier) {
+fun DiagnosticsScreen(
+    state: UranAppState,
+    modifier: Modifier = Modifier,
+    relayActive: Boolean = false,
+    relayMessage: String = "",
+    onToggleRelay: (() -> Unit)? = null
+) {
     var showSerialMonitor by remember { mutableStateOf(false) }
     if (showSerialMonitor) {
         SerialMonitorScreen(state, onBack = { showSerialMonitor = false }, modifier = modifier)
@@ -54,6 +60,15 @@ fun DiagnosticsScreen(state: UranAppState, modifier: Modifier = Modifier) {
             onClick = { showSerialMonitor = true },
             modifier = Modifier.fillMaxWidth()
         ) { Text("Open Serial Monitor") }
+
+        if (onToggleRelay != null) {
+            OutlinedButton(
+                onClick = onToggleRelay,
+                enabled = !state.flightArmed && !state.flightArmPending,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text(if (relayActive) "Stop laptop telemetry" else "Start laptop telemetry") }
+            Text(relayMessage, color = Muted, fontSize = 12.sp)
+        }
 
         Panel {
             SectionLabel("SYSTEM HEALTH")
