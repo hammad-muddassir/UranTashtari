@@ -95,7 +95,7 @@ fun DiagnosticsScreen(
             )
 
             StatRow(
-                "Physical key",
+                "Manual input fresh",
                 if (legacyLive) {
                     yesNo(state.flight.keyActive)
                 } else {
