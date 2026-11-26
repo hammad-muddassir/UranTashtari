@@ -18,6 +18,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.uran.tashtari.model.DroneCommand
 import com.uran.tashtari.network.BleCommandSender
+import com.uran.tashtari.network.FlightTelemetryRelay
 import com.uran.tashtari.network.LinkStatus
 import com.uran.tashtari.network.UranProtocol
 import kotlinx.coroutines.delay
@@ -32,6 +33,8 @@ fun AppRoot(modifier: Modifier = Modifier) {
     val state = remember { UranAppState(BleCommandSender(context.applicationContext)) }
     val sender = state.sender
     val link by sender.state.collectAsState()
+    val relay = remember { FlightTelemetryRelay(context.applicationContext) }
+    val relayStatus by relay.status.collectAsState()
 
     var tab by remember { mutableIntStateOf(FLIGHT_TAB) }
     var foreground by remember(activity) {
@@ -46,6 +49,31 @@ fun AppRoot(modifier: Modifier = Modifier) {
         } else {
             state.addLog("ERR", "Bluetooth permission denied")
         }
+    }
+
+    val relayPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        if (result.isNotEmpty() && result.values.all { it } &&
+            !state.flightArmed && !state.flightArmPending) {
+            relay.start()
+        } else {
+            state.addLog("ERR", "Laptop telemetry permission denied or aircraft armed")
+        }
+    }
+
+    fun toggleRelay() {
+        if (state.flightArmed || state.flightArmPending) return
+        if (relayStatus.active) {
+            relay.stop()
+            return
+        }
+        val missing = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            listOf(Manifest.permission.BLUETOOTH_ADVERTISE, Manifest.permission.BLUETOOTH_CONNECT)
+                .filter { ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED }
+        } else emptyList()
+        if (missing.isEmpty()) relay.start()
+        else relayPermissionLauncher.launch(missing.toTypedArray())
     }
 
     fun connectWithPermission() {
@@ -74,7 +102,10 @@ fun AppRoot(modifier: Modifier = Modifier) {
     }
 
     LaunchedEffect(sender) {
-        sender.replies.collect { state.handleReply(it) }
+        sender.replies.collect {
+            state.handleReply(it)
+            if (sender.state.value.status == LinkStatus.READY) relay.offer(it)
+        }
     }
 
     LaunchedEffect(sender) {
@@ -88,6 +119,7 @@ fun AppRoot(modifier: Modifier = Modifier) {
         } else {
             state.flightTestSelected = false
             state.resetLiveFlight("DISCONNECTED")
+            relay.clearSamples()
         }
     }
 
@@ -145,7 +177,10 @@ fun AppRoot(modifier: Modifier = Modifier) {
                     foreground = false
                     leaveManualFlight()
                 }
-                Lifecycle.Event.ON_STOP -> sender.disconnect()
+                Lifecycle.Event.ON_STOP -> {
+                    sender.disconnect()
+                    relay.stop()
+                }
                 else -> Unit
             }
         }
@@ -153,6 +188,7 @@ fun AppRoot(modifier: Modifier = Modifier) {
         onDispose {
             activity.lifecycle.removeObserver(observer)
             sender.disconnect()
+            relay.close()
         }
     }
 
@@ -164,7 +200,12 @@ fun AppRoot(modifier: Modifier = Modifier) {
                     onConnect = { connectWithPermission() }
                 )
                 CAMERA_TAB -> CameraScreen()
-                else -> DiagnosticsScreen(state)
+                else -> DiagnosticsScreen(
+                    state,
+                    relayActive = relayStatus.active,
+                    relayMessage = relayStatus.message,
+                    onToggleRelay = { toggleRelay() }
+                )
             }
         }
         BottomTabs(tab, navigationEnabled = !state.flightArmed && !state.flightArmPending) {
