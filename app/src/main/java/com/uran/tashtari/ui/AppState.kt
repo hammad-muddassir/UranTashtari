@@ -35,6 +35,7 @@ class UranAppState(
     var throttleTransmitted by mutableIntStateOf(0)
 
     var flightTestSelected by mutableStateOf(false)
+        private set
     var flightArmed by mutableStateOf(false)
         private set
     var flightArmPending by mutableStateOf(false)
@@ -182,6 +183,12 @@ class UranAppState(
         rcSentAt.fill(0L)
     }
 
+    fun enableControls() {
+        if (sender.state.value.status != LinkStatus.READY || stopped || flightTestSelected) return
+        resetLiveFlight("WAITING")
+        flightTestSelected = true
+    }
+
     fun armFlight() {
         val time = SystemClock.elapsedRealtime()
         if (!flightTestSelected || stopped || flightArmed || flightArmPending ||
@@ -231,14 +238,23 @@ class UranAppState(
                         sender.sendDisarm()
                     }
                 }
-                "FAULT", "CFG" -> resetLiveFlight(status)
-                else -> if (flightArmed) resetLiveFlight(status) else liveStatus = status
+                "FAULT", "CFG" -> {
+                    if (flightArmed || flightArmPending) disarm()
+                    resetLiveFlight(status)
+                }
+                else -> if (flightArmed) {
+                    flightTestSelected = false
+                    resetLiveFlight(status)
+                } else liveStatus = status
             }
             return
         }
 
         if (line == "ERR,FLIGHT_ARM" || line == "ACK,DISARMED" ||
             line == "ACK,ESTOP" || line == "ERR,MPU_FAULT") {
+            if (flightArmed || flightArmPending || line == "ACK,ESTOP" || line == "ERR,MPU_FAULT") {
+                flightTestSelected = false
+            }
             resetLiveFlight(if (line == "ERR,FLIGHT_ARM") "ARM REJECTED" else "SAFE")
         }
 
@@ -360,6 +376,7 @@ class UranAppState(
     }
 
     fun disarm() {
+        flightTestSelected = false
         resetLiveFlight("DISARM REQUESTED")
 
         val sent = sender.sendDisarm()
@@ -375,6 +392,7 @@ class UranAppState(
     }
 
     fun estop() {
+        flightTestSelected = false
         resetLiveFlight("E-STOP REQUESTED")
 
         stopped = true
