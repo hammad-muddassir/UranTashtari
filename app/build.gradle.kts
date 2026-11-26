@@ -20,6 +20,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".appswitch"
+        }
         release {
             optimization {
                 enable = true
