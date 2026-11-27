@@ -1,0 +1,38 @@
+import cv2, time
+from ultralytics import YOLO
+
+model = YOLO(r"C:\Users\Rayyyan\Documents\capdata\best.pt")
+url = "http://192.168.x.x:81/stream"   # put your real ESP32 IP here
+conf_thr = 0.4
+
+cap = cv2.VideoCapture(url)
+n = 0
+t0 = time.time()
+while True:
+    ok, frame = cap.read()
+    if not ok:
+        print("stream lost, reconnecting...")
+        cap.release()
+        time.sleep(1)
+        cap = cv2.VideoCapture(url)
+        continue
+
+    r = model.predict(frame, imgsz=416, conf=conf_thr, verbose=False)[0]
+    out = r.plot()
+    for b in r.boxes:
+        print(f"cap conf={float(b.conf):.2f}")
+
+    n += 1
+    fps = n / (time.time() - t0)
+    cv2.putText(out, f"{fps:.1f} FPS", (10, 25),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+    cv2.imshow("live test", out)
+
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord("s"):
+        cv2.imwrite(f"snap_{int(time.time())}.jpg", frame)   # save a frame
+    if key == ord("q"):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
